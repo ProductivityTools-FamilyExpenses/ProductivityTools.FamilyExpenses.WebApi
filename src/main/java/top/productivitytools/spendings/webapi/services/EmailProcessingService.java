@@ -8,7 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import top.productivitytools.spendings.webapi.dto.ParsedExpense;
+import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
@@ -90,15 +90,15 @@ public class EmailProcessingService {
 
     private void processSingleMBankEmail(RawEmailRow rawEmail) {
         try {
-            List<ParsedExpense> expenses = mBankEmailParser.parseHtmlAttachment(
+            List<ParsedSpending> spendings = mBankEmailParser.parseHtmlAttachment(
                     rawEmail.messageId(),
                     rawEmail.rawHtml()
             );
 
-            for (ParsedExpense expense : expenses) {
+            for (ParsedSpending spending : spendings) {
                 jdbcTemplate.update(
                         """
-                        INSERT INTO expenses (
+                        INSERT INTO spendings (
                             raw_email_id, operation_id, operation_date, operation_time, operation_type,
                             src_account, dst_account, amount, currency, name,
                             amount_left, amount_left_currency, details
@@ -106,18 +106,18 @@ public class EmailProcessingService {
                         ON CONFLICT (operation_id) DO NOTHING
                         """,
                         rawEmail.id(),
-                        expense.operationId(),
-                        expense.operationDate(),
-                        expense.operationTime(),
-                        expense.operationType(),
-                        expense.srcAccount(),
-                        expense.dstAccount(),
-                        expense.amount(),
-                        expense.currency(),
-                        expense.name(),
-                        expense.amountLeft(),
-                        expense.amountLeftCurrency(),
-                        expense.details()
+                        spending.operationId(),
+                        spending.operationDate(),
+                        spending.operationTime(),
+                        spending.operationType(),
+                        spending.srcAccount(),
+                        spending.dstAccount(),
+                        spending.amount(),
+                        spending.currency(),
+                        spending.name(),
+                        spending.amountLeft(),
+                        spending.amountLeftCurrency(),
+                        spending.details()
                 );
             }
 

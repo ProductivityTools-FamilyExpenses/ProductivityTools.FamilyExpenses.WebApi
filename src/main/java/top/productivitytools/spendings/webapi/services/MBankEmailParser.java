@@ -5,7 +5,7 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
-import top.productivitytools.spendings.webapi.dto.ParsedExpense;
+import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 @Service
 public class MBankEmailParser {
 
-    public List<ParsedExpense> parseHtmlAttachment(String messageId, String rawHtml) {
+    public List<ParsedSpending> parseHtmlAttachment(String messageId, String rawHtml) {
         Document doc = Jsoup.parse(rawHtml);
         String date = extractDate(doc);
 
@@ -36,19 +36,19 @@ public class MBankEmailParser {
             }
         }
 
-        List<ParsedExpense> expenses = new ArrayList<>();
+        List<ParsedSpending> spendings = new ArrayList<>();
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             List<String> row = rows.get(rowIndex);
             if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
                 String operationId = messageId + "-" + rowIndex;
-                ParsedExpense parsed = parseTransferRow(operationId, date, row.get(0), row.get(1));
+                ParsedSpending parsed = parseTransferRow(operationId, date, row.get(0), row.get(1));
                 if (parsed != null) {
-                    expenses.add(parsed);
+                    spendings.add(parsed);
                 }
             }
         }
 
-        return expenses;
+        return spendings;
     }
 
     String extractDate(Document doc) {
@@ -64,7 +64,7 @@ public class MBankEmailParser {
                 .trim();
     }
 
-    public ParsedExpense parseTransferRow(String operationId, String date, String time, String details) {
+    public ParsedSpending parseTransferRow(String operationId, String date, String time, String details) {
         if (details == null || details.isBlank() || !details.startsWith("mBank:")) {
             return null;
         }
@@ -86,7 +86,7 @@ public class MBankEmailParser {
             String amountLeft = amountLeftParts[0];
             String amountLeftCurrency = amountLeftParts.length > 1 ? amountLeftParts[1].replace(".", "") : "";
 
-            return new ParsedExpense(
+            return new ParsedSpending(
                     operationId, date, time, "Autoryzacja karty",
                     srcCard, "", amount, currency, name,
                     amountLeft, amountLeftCurrency, details
@@ -111,7 +111,7 @@ public class MBankEmailParser {
                 leftCurrency = left.length > 1 ? left[1].replace(".", "") : "";
             }
 
-            return new ParsedExpense(
+            return new ParsedSpending(
                     operationId, date, time, "Przelew wychodzacy",
                     srcAccount, dstAccount, amount, currency, name,
                     leftValue, leftCurrency, details
@@ -136,7 +136,7 @@ public class MBankEmailParser {
                 leftCurrency = left.length > 1 ? left[1].replace(".", "") : "";
             }
 
-            return new ParsedExpense(
+            return new ParsedSpending(
                     operationId, date, time, "Przelew przychodzący",
                     srcAccount, dstAccount, amount, currency, name,
                     leftValue, leftCurrency, details
@@ -156,7 +156,7 @@ public class MBankEmailParser {
             String amountLeft = amountLeftRaw[1];
             String amountLeftCurrency = amountLeftRaw[2];
 
-            return new ParsedExpense(
+            return new ParsedSpending(
                     operationId, date, time, "Obciazenie",
                     srcAccount, "", amount, amountCurrency, name,
                     amountLeft, amountLeftCurrency, details
@@ -176,7 +176,7 @@ public class MBankEmailParser {
             String amountLeft = amountLeftRaw[1];
             String amountLeftCurrency = amountLeftRaw[2];
 
-            return new ParsedExpense(
+            return new ParsedSpending(
                     operationId, date, time, "Uznanie",
                     "", dstAccount, amount, amountCurrency, name,
                     amountLeft, amountLeftCurrency, details

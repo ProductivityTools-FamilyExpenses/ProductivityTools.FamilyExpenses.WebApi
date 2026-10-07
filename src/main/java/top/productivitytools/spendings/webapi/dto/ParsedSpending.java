@@ -2,7 +2,7 @@ package top.productivitytools.spendings.webapi.dto;
 
 import java.math.BigDecimal;
 
-public record ParsedExpense(
+public record ParsedSpending(
         String operationId,
         String operationDate,
         String operationTime,
