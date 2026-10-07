@@ -8,8 +8,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -20,9 +22,11 @@ public class EmailProcessingService {
 
     private final JdbcTemplate jdbcTemplate;
     private final MBankEmailParser mBankEmailParser;
+    private final AllegroEmailParser allegroEmailParser;
     private final ReentrantLock lock = new ReentrantLock();
 
     private record RawEmailRow(Long id, String messageId, String source, String rawHtml) {}
+    private record AllegroRawEmailRow(Long id, String messageId, OffsetDateTime emailDate, String rawHtml) {}
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
@@ -44,6 +48,13 @@ public class EmailProcessingService {
         jdbcTemplate.update(
                 """
                 UPDATE raw_emails
+                SET status = 'NEW', error_message = NULL
+                WHERE status = 'ERROR'
+                """
+        );
+        jdbcTemplate.update(
+                """
+                UPDATE allegro_raw_emails
                 SET status = 'NEW', error_message = NULL
                 WHERE status = 'ERROR'
                 """
@@ -79,6 +90,33 @@ public class EmailProcessingService {
 
                 for (RawEmailRow rawEmail : pendingEmails) {
                     processSingleMBankEmail(rawEmail);
+                    processedCount++;
+                }
+            }
+
+            while (true) {
+                List<AllegroRawEmailRow> pendingAllegroEmails = jdbcTemplate.query(
+                        """
+                        SELECT id, message_id, email_date, raw_html
+                        FROM allegro_raw_emails
+                        WHERE status = 'NEW'
+                        ORDER BY id ASC
+                        LIMIT 50
+                        """,
+                        (rs, rowNum) -> new AllegroRawEmailRow(
+                                rs.getLong("id"),
+                                rs.getString("message_id"),
+                                rs.getObject("email_date", OffsetDateTime.class),
+                                rs.getString("raw_html")
+                        )
+                );
+
+                if (pendingAllegroEmails.isEmpty()) {
+                    break;
+                }
+
+                for (AllegroRawEmailRow allegroEmail : pendingAllegroEmails) {
+                    processSingleAllegroEmail(allegroEmail);
                     processedCount++;
                 }
             }
@@ -152,6 +190,29 @@ public class EmailProcessingService {
                   AND (sd.category IS NULL OR sd.category = '')
                 """
         );
+
+        // 5. Uzupełnij notatkę (note) dla zakupów z Allegro (odpowiednik AddCommentForAllegro.js)
+        jdbcTemplate.update(
+                """
+                UPDATE spending_details sd
+                SET note = allegro_match.formatted_note,
+                    updated_at = NOW()
+                FROM (
+                    SELECT s.id AS spending_id,
+                           STRING_AGG(
+                               ap.purchase_date::text || ' ' || ap.item_name || ' ' || ap.item_cost::text,
+                               E'\\n' ORDER BY ap.purchase_date ASC, ap.id ASC
+                           ) AS formatted_note
+                    FROM spendings s
+                    JOIN spending_details sd2 ON sd2.spending_id = s.id
+                    JOIN allegro_purchases ap ON ap.full_price = (-1 * s.amount)
+                    WHERE (sd2.note IS NULL OR sd2.note = '')
+                      AND s.name IN ('Allegro /Poznan', 'ALLEGRO.PL', 'ALLEGRO.PL &', 'WWW.ALLEGRO.PL')
+                    GROUP BY s.id
+                ) allegro_match
+                WHERE sd.spending_id = allegro_match.spending_id
+                """
+        );
     }
 
     private void processSingleMBankEmail(RawEmailRow rawEmail) {
@@ -205,6 +266,57 @@ public class EmailProcessingService {
                     """,
                     ex.getMessage(),
                     rawEmail.id()
+            );
+        }
+    }
+
+    private void processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {
+        try {
+            List<ParsedAllegroPurchase> purchases = allegroEmailParser.parseEmailBody(
+                    allegroEmail.messageId(),
+                    allegroEmail.emailDate(),
+                    allegroEmail.rawHtml()
+            );
+
+            for (ParsedAllegroPurchase purchase : purchases) {
+                jdbcTemplate.update(
+                        """
+                        INSERT INTO allegro_purchases (
+                            allegro_raw_email_id, operation_id, purchase_date, full_price,
+                            item_name, item_cost, multiple_items, item_count, item_price
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (operation_id) DO NOTHING
+                        """,
+                        allegroEmail.id(),
+                        purchase.operationId(),
+                        purchase.purchaseDate(),
+                        purchase.fullPrice(),
+                        purchase.itemName(),
+                        purchase.itemCost(),
+                        purchase.multipleItems(),
+                        purchase.itemCount(),
+                        purchase.itemPrice()
+                );
+            }
+
+            jdbcTemplate.update(
+                    """
+                    UPDATE allegro_raw_emails
+                    SET status = 'PROCESSED', processed_at = NOW(), error_message = NULL
+                    WHERE id = ?
+                    """,
+                    allegroEmail.id()
+            );
+        } catch (Exception ex) {
+            log.error("Failed to parse Allegro email id={} messageId={}", allegroEmail.id(), allegroEmail.messageId(), ex);
+            jdbcTemplate.update(
+                    """
+                    UPDATE allegro_raw_emails
+                    SET status = 'ERROR', processed_at = NOW(), error_message = ?
+                    WHERE id = ?
+                    """,
+                    ex.getMessage(),
+                    allegroEmail.id()
             );
         }
     }
