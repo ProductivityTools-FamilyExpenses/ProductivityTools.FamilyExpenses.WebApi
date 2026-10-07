@@ -53,3 +53,6 @@ override.tf.json
 .terraformrc
 terraform.rc
 tf_init_stats.pb
+
+### Manual SQL scripts (not tracked in Git) ###
+manual-scripts/

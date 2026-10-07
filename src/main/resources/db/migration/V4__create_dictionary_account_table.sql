@@ -1,0 +1,5 @@
+CREATE TABLE dictionary_account (
+    id BIGSERIAL PRIMARY KEY,
+    key VARCHAR(128) NOT NULL UNIQUE,
+    name VARCHAR(128) NOT NULL
+);
