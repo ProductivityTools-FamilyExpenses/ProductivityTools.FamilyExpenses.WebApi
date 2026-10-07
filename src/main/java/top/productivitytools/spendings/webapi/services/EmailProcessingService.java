@@ -82,10 +82,76 @@ public class EmailProcessingService {
                     processedCount++;
                 }
             }
+
+            enrichSpendingDetails();
         } finally {
             lock.unlock();
         }
         return processedCount;
+    }
+
+    public void enrichSpendingDetails() {
+        // 1. Utwórz brakujące rekordy 1-1 w spending_details dla każdego wpisu w spendings
+        jdbcTemplate.update(
+                """
+                INSERT INTO spending_details (spending_id)
+                SELECT s.id
+                FROM spendings s
+                LEFT JOIN spending_details sd ON sd.spending_id = s.id
+                WHERE sd.spending_id IS NULL
+                ON CONFLICT (spending_id) DO NOTHING
+                """
+        );
+
+        // 2. Uzupełnij konto (account) na podstawie dictionary_account (odpowiednik SetAccount.js)
+        jdbcTemplate.update(
+                """
+                UPDATE spending_details sd
+                SET account = matched.account_name,
+                    updated_at = NOW()
+                FROM (
+                    SELECT s.id AS spending_id,
+                           COALESCE(da_src.name, da_dst.name) AS account_name
+                    FROM spendings s
+                    JOIN spending_details sd2 ON sd2.spending_id = s.id
+                    LEFT JOIN dictionary_account da_src
+                           ON s.src_account IS NOT NULL AND s.src_account <> ''
+                          AND (da_src.key = s.src_account OR LTRIM(da_src.key, '0') = LTRIM(s.src_account, '0'))
+                    LEFT JOIN dictionary_account da_dst
+                           ON s.dst_account IS NOT NULL AND s.dst_account <> ''
+                          AND (da_dst.key = s.dst_account OR LTRIM(da_dst.key, '0') = LTRIM(s.dst_account, '0'))
+                    WHERE (sd2.account IS NULL OR sd2.account = '')
+                      AND COALESCE(da_src.name, da_dst.name) IS NOT NULL
+                ) matched
+                WHERE sd.spending_id = matched.spending_id
+                """
+        );
+
+        // 3. Uzupełnij kategorię na podstawie konta (odpowiednik SetAccountAsCategory.js: Wypłaty -> ProxyWypłaty)
+        jdbcTemplate.update(
+                """
+                UPDATE spending_details sd
+                SET category = dc.name,
+                    updated_at = NOW()
+                FROM dictionary_category dc
+                WHERE (sd.category IS NULL OR sd.category = '')
+                  AND sd.account = 'Wypłaty'
+                  AND dc.name = 'ProxyWypłaty'
+                """
+        );
+
+        // 4. Uzupełnij kategorię na podstawie dictionary_category_mapping (odpowiednik SetCategories.js)
+        jdbcTemplate.update(
+                """
+                UPDATE spending_details sd
+                SET category = dcm.category,
+                    updated_at = NOW()
+                FROM spendings s
+                JOIN dictionary_category_mapping dcm ON dcm.key = s.name
+                WHERE sd.spending_id = s.id
+                  AND (sd.category IS NULL OR sd.category = '')
+                """
+        );
     }
 
     private void processSingleMBankEmail(RawEmailRow rawEmail) {
