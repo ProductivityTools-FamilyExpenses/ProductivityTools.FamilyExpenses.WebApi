@@ -59,12 +59,13 @@ public class MBankEmailParser {
         return header.text()
                 .replace("Powiadomienie e-mail", "")
                 .trim()
-                .replace(" -", "").replace("- ", "")
+                .replace(" -", "")
+                .replace("- ", "")
                 .trim();
     }
 
     public ParsedExpense parseTransferRow(String operationId, String date, String time, String details) {
-        if (details == null || details.isBlank()) {
+        if (details == null || details.isBlank() || !details.startsWith("mBank:")) {
             return null;
         }
 

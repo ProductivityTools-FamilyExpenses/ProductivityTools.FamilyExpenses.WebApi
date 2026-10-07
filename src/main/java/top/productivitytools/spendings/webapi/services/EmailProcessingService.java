@@ -2,6 +2,8 @@ package top.productivitytools.spendings.webapi.services;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,6 +24,12 @@ public class EmailProcessingService {
 
     private record RawEmailRow(Long id, String messageId, String source, String rawHtml) {}
 
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        resetErrorEmailsToNew();
+        processPendingEmails();
+    }
+
     @Scheduled(fixedDelay = 60_000)
     public void runScheduled() {
         processPendingEmails();
@@ -30,6 +38,16 @@ public class EmailProcessingService {
     @Async
     public void triggerAsync() {
         processPendingEmails();
+    }
+
+    public void resetErrorEmailsToNew() {
+        jdbcTemplate.update(
+                """
+                UPDATE raw_emails
+                SET status = 'NEW', error_message = NULL
+                WHERE status = 'ERROR'
+                """
+        );
     }
 
     public int processPendingEmails() {

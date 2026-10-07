@@ -46,6 +46,7 @@ public class RawEmailController {
 
     @PostMapping("/process")
     public ResponseEntity<Map<String, Integer>> processPendingEmails() {
+        emailProcessingService.resetErrorEmailsToNew();
         int processed = emailProcessingService.processPendingEmails();
         return ResponseEntity.ok(Map.of("processedEmails", processed));
     }
