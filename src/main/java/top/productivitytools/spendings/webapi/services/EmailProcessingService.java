@@ -191,28 +191,66 @@ public class EmailProcessingService {
                 """
         );
 
-        // 5. Uzupełnij notatkę (note) dla zakupów z Allegro (odpowiednik AddCommentForAllegro.js)
-        jdbcTemplate.update(
+        // 5. Powiąż wydatki Allegro w spending_details z zamówieniami w allegro_raw_emails po kwocie i zbliżonej dacie (+/- 7 dni)
+        linkAllegroPurchasesToSpendings();
+    }
+
+    private void linkAllegroPurchasesToSpendings() {
+        List<Long> unlinkedSpendingIds = jdbcTemplate.queryForList(
                 """
-                UPDATE spending_details sd
-                SET note = allegro_match.formatted_note,
-                    updated_at = NOW()
-                FROM (
-                    SELECT s.id AS spending_id,
-                           STRING_AGG(
-                               ap.purchase_date::text || ' ' || ap.item_name || ' ' || ap.item_cost::text,
-                               E'\\n' ORDER BY ap.purchase_date ASC, ap.id ASC
-                           ) AS formatted_note
-                    FROM spendings s
-                    JOIN spending_details sd2 ON sd2.spending_id = s.id
-                    JOIN allegro_purchases ap ON ap.full_price = (-1 * s.amount)
-                    WHERE (sd2.note IS NULL OR sd2.note = '')
-                      AND s.name IN ('Allegro /Poznan', 'ALLEGRO.PL', 'ALLEGRO.PL &', 'WWW.ALLEGRO.PL')
-                    GROUP BY s.id
-                ) allegro_match
-                WHERE sd.spending_id = allegro_match.spending_id
-                """
+                SELECT s.id
+                FROM spendings s
+                JOIN spending_details sd ON sd.spending_id = s.id
+                WHERE sd.allegro_raw_email_id IS NULL
+                  AND s.name IN ('Allegro /Poznan', 'ALLEGRO.PL', 'ALLEGRO.PL &', 'WWW.ALLEGRO.PL')
+                ORDER BY s.id ASC
+                """,
+                Long.class
         );
+
+        for (Long spendingId : unlinkedSpendingIds) {
+            jdbcTemplate.update(
+                    """
+                    UPDATE spending_details sd
+                    SET allegro_raw_email_id = matched.allegro_raw_email_id,
+                        updated_at = NOW()
+                    FROM (
+                        SELECT ap.allegro_raw_email_id,
+                               MIN(ABS(ap.purchase_date - COALESCE(
+                                   CASE
+                                       WHEN s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN s.operation_date::date
+                                       WHEN s.operation_date ~ '^\\d{2}\\.\\d{2}\\.\\d{4}$' THEN TO_DATE(s.operation_date, 'DD.MM.YYYY')
+                                       WHEN s.operation_date ~ '^\\d{2}-\\d{2}-\\d{4}$' THEN TO_DATE(s.operation_date, 'DD-MM-YYYY')
+                                   END,
+                                   (re.email_date AT TIME ZONE 'Europe/Warsaw')::date
+                               ))) AS date_diff
+                        FROM spendings s
+                        JOIN raw_emails re ON re.id = s.raw_email_id
+                        JOIN allegro_purchases ap ON ap.full_price = (-1 * s.amount)
+                        WHERE s.id = ?
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM spending_details sd_used
+                              WHERE sd_used.allegro_raw_email_id = ap.allegro_raw_email_id
+                          )
+                          AND ABS(ap.purchase_date - COALESCE(
+                              CASE
+                                  WHEN s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN s.operation_date::date
+                                  WHEN s.operation_date ~ '^\\d{2}\\.\\d{2}\\.\\d{4}$' THEN TO_DATE(s.operation_date, 'DD.MM.YYYY')
+                                  WHEN s.operation_date ~ '^\\d{2}-\\d{2}-\\d{4}$' THEN TO_DATE(s.operation_date, 'DD-MM-YYYY')
+                              END,
+                              (re.email_date AT TIME ZONE 'Europe/Warsaw')::date
+                          )) <= 7
+                        GROUP BY ap.allegro_raw_email_id
+                        ORDER BY date_diff ASC, ap.allegro_raw_email_id ASC
+                        LIMIT 1
+                    ) matched
+                    WHERE sd.spending_id = ?
+                    """,
+                    spendingId,
+                    spendingId
+            );
+        }
     }
 
     private void processSingleMBankEmail(RawEmailRow rawEmail) {
