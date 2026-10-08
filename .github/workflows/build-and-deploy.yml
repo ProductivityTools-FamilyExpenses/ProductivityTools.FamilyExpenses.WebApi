@@ -92,6 +92,7 @@ jobs:
         DB_URL=$DB_URL
         DB_USERNAME=$DB_USER
         CORS_ALLOWED_ORIGINS=$CORS_ORIGINS
+        FIREBASE_PROJECT_ID=ptprojectsweb
         EOF
 
         if [ -n "$DB_PASS" ]; then
