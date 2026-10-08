@@ -82,6 +82,7 @@ jobs:
         DB_URL: ${{ matrix.db-url }}
         DB_USER: ${{ matrix.db-user }}
         DB_PASS: ${{ secrets.DB_PASSWORD }}
+        CORS_ORIGINS: "http://localhost:4200,https://pt-spendings.web.app,https://pt-spendings.firebaseapp.com"
       run: |
         echo "Configuring environment variables and systemd service file..."
         
@@ -90,6 +91,7 @@ jobs:
         SERVER_PORT=$SERVER_PORT
         DB_URL=$DB_URL
         DB_USERNAME=$DB_USER
+        CORS_ALLOWED_ORIGINS=$CORS_ORIGINS
         EOF
 
         if [ -n "$DB_PASS" ]; then
