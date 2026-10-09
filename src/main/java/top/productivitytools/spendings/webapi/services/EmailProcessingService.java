@@ -8,6 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
@@ -283,6 +284,31 @@ public class EmailProcessingService {
                         spending.amountLeft(),
                         spending.amountLeftCurrency(),
                         spending.details()
+                );
+            }
+
+            List<ParsedAccountBalance> balances = mBankEmailParser.parseAccountBalances(
+                    rawEmail.messageId(),
+                    rawEmail.rawHtml()
+            );
+
+            for (ParsedAccountBalance balance : balances) {
+                jdbcTemplate.update(
+                        """
+                        INSERT INTO account_balances (
+                            raw_email_id, operation_id, account, balance_date, operation_time,
+                            amount, currency, details
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (operation_id) DO NOTHING
+                        """,
+                        rawEmail.id(),
+                        balance.operationId(),
+                        balance.account(),
+                        balance.balanceDate(),
+                        balance.operationTime(),
+                        balance.amount(),
+                        balance.currency(),
+                        balance.details()
                 );
             }
 

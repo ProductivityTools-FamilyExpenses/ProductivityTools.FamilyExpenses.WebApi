@@ -5,20 +5,90 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
+import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
 public class MBankEmailParser {
 
+    private static final String BALANCE_PREFIX = "mBank: Saldo rach.";
+
+    /** e.g. "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostepne 6491,93 PLN" */
+    private static final Pattern BALANCE_PATTERN = Pattern.compile(
+            "^mBank: Saldo rach\\.\\s*(?<account>\\S+)\\s+w dniu\\s+(?<date>\\d{4}-\\d{2}-\\d{2})\\.?\\s+"
+                    + "Dostepne\\s+(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s*$"
+    );
+
     public List<ParsedSpending> parseHtmlAttachment(String messageId, String rawHtml) {
         Document doc = Jsoup.parse(rawHtml);
         String date = extractDate(doc);
+        List<List<String>> rows = extractRows(doc);
 
+        List<ParsedSpending> spendings = new ArrayList<>();
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<String> row = rows.get(rowIndex);
+            if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
+                String operationId = messageId + "-" + rowIndex;
+                ParsedSpending parsed = parseTransferRow(operationId, date, row.get(0), row.get(1));
+                if (parsed != null) {
+                    spendings.add(parsed);
+                }
+            }
+        }
+
+        return spendings;
+    }
+
+    /**
+     * Extracts daily balance snapshots ("Saldo rach. ...") from the same attachment.
+     * These rows are not transactions, so they are kept apart from {@link #parseHtmlAttachment}.
+     */
+    public List<ParsedAccountBalance> parseAccountBalances(String messageId, String rawHtml) {
+        Document doc = Jsoup.parse(rawHtml);
+        List<List<String>> rows = extractRows(doc);
+
+        List<ParsedAccountBalance> balances = new ArrayList<>();
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<String> row = rows.get(rowIndex);
+            if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
+                String operationId = messageId + "-" + rowIndex;
+                ParsedAccountBalance parsed = parseBalanceRow(operationId, row.get(0), row.get(1));
+                if (parsed != null) {
+                    balances.add(parsed);
+                }
+            }
+        }
+
+        return balances;
+    }
+
+    public ParsedAccountBalance parseBalanceRow(String operationId, String time, String details) {
+        if (details == null || !details.startsWith(BALANCE_PREFIX)) {
+            return null;
+        }
+        Matcher m = BALANCE_PATTERN.matcher(details.trim());
+        if (!m.matches()) {
+            throw new IllegalArgumentException("Unrecognized mBank balance format: " + details);
+        }
+        return new ParsedAccountBalance(
+                operationId,
+                m.group("account"),
+                LocalDate.parse(m.group("date")),
+                time,
+                parseAmount(m.group("amount").replace(" ", "")),
+                m.group("currency"),
+                details
+        );
+    }
+
+    private List<List<String>> extractRows(Document doc) {
         Elements trElements = doc.select("table > tbody > tr > td > table > tbody > tr");
         if (trElements.isEmpty()) {
             trElements = doc.select("table table tr");
@@ -35,20 +105,7 @@ public class MBankEmailParser {
                 rows.add(row);
             }
         }
-
-        List<ParsedSpending> spendings = new ArrayList<>();
-        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
-            List<String> row = rows.get(rowIndex);
-            if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
-                String operationId = messageId + "-" + rowIndex;
-                ParsedSpending parsed = parseTransferRow(operationId, date, row.get(0), row.get(1));
-                if (parsed != null) {
-                    spendings.add(parsed);
-                }
-            }
-        }
-
-        return spendings;
+        return rows;
     }
 
     String extractDate(Document doc) {
@@ -66,6 +123,11 @@ public class MBankEmailParser {
 
     public ParsedSpending parseTransferRow(String operationId, String date, String time, String details) {
         if (details == null || details.isBlank() || !details.startsWith("mBank:")) {
+            return null;
+        }
+
+        // Balance snapshots are handled by parseAccountBalances(), not stored as spendings
+        if (details.startsWith(BALANCE_PREFIX)) {
             return null;
         }
 
