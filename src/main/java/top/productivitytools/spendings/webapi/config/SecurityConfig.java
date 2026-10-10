@@ -50,8 +50,8 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        // Manual processing trigger from the WebApp – requires a signed-in user
-                        .requestMatchers(HttpMethod.POST, "/api/emails/process").authenticated()
+                        // Manual triggers from the WebApp – require a signed-in user
+                        .requestMatchers(HttpMethod.POST, "/api/emails/process", "/api/spendings/fill-*").authenticated()
                         // Data ingestion from Google Apps Script – intentionally unauthenticated for now
                         .requestMatchers(HttpMethod.POST, "/api/**").permitAll()
                         // Simple liveness probe

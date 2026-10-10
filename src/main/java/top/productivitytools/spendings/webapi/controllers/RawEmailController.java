@@ -24,7 +24,7 @@ public class RawEmailController {
     public ResponseEntity<Void> saveRawEmail(@RequestBody RawEmailRequest request) {
         jdbcTemplate.update(
                 """
-                INSERT INTO raw_emails (
+                INSERT INTO mbank_raw_emails (
                     message_id, thread_id, source, subject, attachment_name, email_date, raw_html, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW')
                 ON CONFLICT (message_id) DO NOTHING

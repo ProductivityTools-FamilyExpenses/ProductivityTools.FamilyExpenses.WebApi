@@ -4,9 +4,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import top.productivitytools.spendings.webapi.dto.SpendingResponse;
+import top.productivitytools.spendings.webapi.services.EmailProcessingService;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -47,10 +49,37 @@ public class SpendingController {
     private static final RowMapper<SpendingResponse> SPENDING_ROW_MAPPER = SpendingController::mapRow;
 
     private final JdbcTemplate jdbcTemplate;
+    private final EmailProcessingService emailProcessingService;
+
+    /** Result of a manual enrichment run: how many rows were filled and how many are still empty. */
+    public record FillResult(int updated, int remainingEmpty) {}
 
     @GetMapping
     public List<SpendingResponse> getAllSpendings() {
         return jdbcTemplate.query(SELECT_SPENDINGS_WITH_DETAILS, SPENDING_ROW_MAPPER);
+    }
+
+    /** Fills missing {@code spending_details.account} from {@code dictionary_account}. */
+    @PostMapping("/fill-accounts")
+    public FillResult fillAccounts() {
+        int updated = emailProcessingService.fillAccounts();
+        return new FillResult(updated, countEmpty("account"));
+    }
+
+    /** Fills missing {@code spending_details.category} from account rules and {@code dictionary_category_mapping}. */
+    @PostMapping("/fill-categories")
+    public FillResult fillCategories() {
+        int updated = emailProcessingService.fillCategories();
+        return new FillResult(updated, countEmpty("category"));
+    }
+
+    private int countEmpty(String column) {
+        // column is a fixed identifier chosen by this class, never user input
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM spending_details WHERE " + column + " IS NULL OR " + column + " = ''",
+                Integer.class
+        );
+        return count == null ? 0 : count;
     }
 
     private static SpendingResponse mapRow(ResultSet rs, int rowNum) throws SQLException {
