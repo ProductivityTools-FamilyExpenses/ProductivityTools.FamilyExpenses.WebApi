@@ -45,29 +45,78 @@ public class EmailProcessingService {
         processPendingEmails();
     }
 
-    public void resetErrorEmailsToNew() {
-        jdbcTemplate.update(
+    /** Outcome of a manual processing run triggered from the UI. */
+    public record ProcessingResult(
+            boolean started,
+            int resetFromError,
+            int processed,
+            int remainingNew,
+            int remainingError
+    ) {}
+
+    /** Resets ERROR e-mails (mBank + Allegro) back to NEW so they are picked up again. Returns the number of rows reset. */
+    public int resetErrorEmailsToNew() {
+        int reset = jdbcTemplate.update(
                 """
                 UPDATE raw_emails
                 SET status = 'NEW', error_message = NULL
                 WHERE status = 'ERROR'
                 """
         );
-        jdbcTemplate.update(
+        reset += jdbcTemplate.update(
                 """
                 UPDATE allegro_raw_emails
                 SET status = 'NEW', error_message = NULL
                 WHERE status = 'ERROR'
                 """
         );
+        return reset;
+    }
+
+    /**
+     * Manual run (button in the WebApp): re-queues ERROR e-mails, processes everything pending
+     * and reports what is left. {@code started=false} means another run was already in progress.
+     */
+    public ProcessingResult processAllPendingIncludingErrors() {
+        int reset = resetErrorEmailsToNew();
+        if (!lock.tryLock()) {
+            return new ProcessingResult(false, reset, 0, countByStatus("NEW"), countByStatus("ERROR"));
+        }
+        int processed;
+        try {
+            processed = processPendingEmailsLocked();
+        } finally {
+            lock.unlock();
+        }
+        return new ProcessingResult(true, reset, processed, countByStatus("NEW"), countByStatus("ERROR"));
+    }
+
+    private int countByStatus(String status) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                SELECT (SELECT COUNT(*) FROM raw_emails WHERE status = ?)
+                     + (SELECT COUNT(*) FROM allegro_raw_emails WHERE status = ?)
+                """,
+                Integer.class, status, status
+        );
+        return count == null ? 0 : count;
     }
 
     public int processPendingEmails() {
         if (!lock.tryLock()) {
             return 0;
         }
-        int processedCount = 0;
         try {
+            return processPendingEmailsLocked();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Processing body – caller must hold {@link #lock}. */
+    private int processPendingEmailsLocked() {
+        int processedCount = 0;
+        {
             while (true) {
                 List<RawEmailRow> pendingEmails = jdbcTemplate.query(
                         """
@@ -123,8 +172,6 @@ public class EmailProcessingService {
             }
 
             enrichSpendingDetails();
-        } finally {
-            lock.unlock();
         }
         return processedCount;
     }

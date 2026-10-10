@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.RestController;
 import top.productivitytools.spendings.webapi.dto.RawEmailRequest;
 import top.productivitytools.spendings.webapi.services.EmailProcessingService;
 
-import java.util.Map;
 import java.util.Objects;
 
 @RestController
@@ -44,10 +43,12 @@ public class RawEmailController {
         return ResponseEntity.accepted().build();
     }
 
+    /**
+     * Manual trigger (button in the WebApp): re-queues e-mails in ERROR state and processes
+     * all NEW e-mails (mBank + Allegro). Requires authentication – see SecurityConfig.
+     */
     @PostMapping("/process")
-    public ResponseEntity<Map<String, Integer>> processPendingEmails() {
-        emailProcessingService.resetErrorEmailsToNew();
-        int processed = emailProcessingService.processPendingEmails();
-        return ResponseEntity.ok(Map.of("processedEmails", processed));
+    public ResponseEntity<EmailProcessingService.ProcessingResult> processPendingEmails() {
+        return ResponseEntity.ok(emailProcessingService.processAllPendingIncludingErrors());
     }
 }
