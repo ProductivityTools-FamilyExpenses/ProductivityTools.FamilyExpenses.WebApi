@@ -43,7 +43,17 @@ public class SpendingController {
                    sd.updated_at AS details_updated_at
             FROM spendings s
             LEFT JOIN spending_details sd ON sd.spending_id = s.id
-            ORDER BY s.id DESC
+            LEFT JOIN mbank_raw_emails re ON re.id = s.raw_email_id
+            ORDER BY COALESCE(
+                         CASE
+                             WHEN s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN s.operation_date::date
+                             WHEN s.operation_date ~ '^\\d{2}\\.\\d{2}\\.\\d{4}$' THEN TO_DATE(s.operation_date, 'DD.MM.YYYY')
+                             WHEN s.operation_date ~ '^\\d{2}-\\d{2}-\\d{4}$' THEN TO_DATE(s.operation_date, 'DD-MM-YYYY')
+                         END,
+                         (re.email_date AT TIME ZONE 'Europe/Warsaw')::date
+                     ) DESC NULLS LAST,
+                     s.operation_time DESC NULLS LAST,
+                     s.id DESC
             """;
 
     private static final RowMapper<SpendingResponse> SPENDING_ROW_MAPPER = SpendingController::mapRow;
