@@ -20,10 +20,14 @@ public class MBankEmailParser {
 
     private static final String BALANCE_PREFIX = "mBank: Saldo rach.";
 
-    /** e.g. "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostepne 6491,93 PLN" */
+    /**
+     * e.g. "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostępne 6491,93 PLN".
+     * The e-mail is iso-8859-2 and the "ę" is frequently lost or replaced on the way
+     * (observed: "Dostpne", "Dost?pne", "Dost\uFFFDpne"), hence {@code Dost\S{0,2}pne}.
+     */
     private static final Pattern BALANCE_PATTERN = Pattern.compile(
             "^mBank: Saldo rach\\.\\s*(?<account>\\S+)\\s+w dniu\\s+(?<date>\\d{4}-\\d{2}-\\d{2})\\.?\\s+"
-                    + "Dostepne\\s+(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s*$"
+                    + "Dost\\S{0,2}pne:?\\s+(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s*$"
     );
 
     public List<ParsedSpending> parseHtmlAttachment(String messageId, String rawHtml) {
