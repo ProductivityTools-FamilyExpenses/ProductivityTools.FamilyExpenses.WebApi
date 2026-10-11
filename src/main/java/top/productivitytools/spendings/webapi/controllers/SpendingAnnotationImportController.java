@@ -28,7 +28,8 @@ public class SpendingAnnotationImportController {
 
     private final JdbcTemplate jdbcTemplate;
 
-    public record AnnotationItem(String operationId, String operationDate, String details, String category, String note) {}
+    public record AnnotationItem(String operationId, String operationDate, String details,
+                                 java.math.BigDecimal amount, String name, String category, String note) {}
 
     public record ImportRequest(List<AnnotationItem> items,
                                 /** when true the sheet category replaces an existing one; notes are only filled when empty */
@@ -36,7 +37,7 @@ public class SpendingAnnotationImportController {
 
     public record UnmatchedItem(String operationId, String operationDate, String category, String note, String reason) {}
 
-    public record ImportResult(int received, int matchedByDetails, int matchedByOperationId,
+    public record ImportResult(int received, Map<String, Integer> matchedBy,
                                int categoriesSet, int notesSet, List<String> createdCategories,
                                List<UnmatchedItem> unmatched) {}
 
@@ -55,7 +56,8 @@ public class SpendingAnnotationImportController {
         Set<Long> used = new HashSet<>();
         List<String> createdCategories = new ArrayList<>();
         List<UnmatchedItem> unmatched = new ArrayList<>();
-        int byDetails = 0, byOperationId = 0, categoriesSet = 0, notesSet = 0;
+        Map<String, Integer> matchedBy = new java.util.LinkedHashMap<>();
+        int categoriesSet = 0, notesSet = 0;
 
         for (AnnotationItem item : items) {
             String category = blankToNull(item.category());
@@ -64,38 +66,56 @@ public class SpendingAnnotationImportController {
                 continue;
             }
 
-            Long spendingId = null;
             String normalizedDetails = normalize(item.details());
+            String messageId = item.operationId() == null || !item.operationId().contains("-")
+                    ? null : item.operationId().substring(0, item.operationId().lastIndexOf('-'));
+
+            // Matching strategies, most specific first. The legacy sheet was edited by hand (dates moved to the
+            // purchase day, amounts converted/split), so each fallback relaxes one of the edited attributes.
+            Long spendingId = null;
+            String how = null;
             if (item.operationDate() != null && normalizedDetails != null) {
+                spendingId = firstUnused(used, jdbcTemplate.queryForList(
+                        "SELECT id FROM spendings WHERE operation_date = ? AND REGEXP_REPLACE(TRIM(details), '\\s+', ' ', 'g') = ? ORDER BY id",
+                        Long.class, item.operationDate(), normalizedDetails));
+                how = "date+details";
+            }
+            if (spendingId == null && messageId != null && normalizedDetails != null) {
+                spendingId = firstUnused(used, jdbcTemplate.queryForList(
+                        "SELECT id FROM spendings WHERE operation_id LIKE ? AND REGEXP_REPLACE(TRIM(details), '\\s+', ' ', 'g') = ? ORDER BY id",
+                        Long.class, messageId + "-%", normalizedDetails));
+                how = "message+details";
+            }
+            if (spendingId == null && normalizedDetails != null) {
                 List<Long> ids = jdbcTemplate.queryForList(
-                        """
-                        SELECT id FROM spendings
-                        WHERE operation_date = ?
-                          AND REGEXP_REPLACE(TRIM(details), '\\s+', ' ', 'g') = ?
-                        ORDER BY id
-                        """,
-                        Long.class, item.operationDate(), normalizedDetails);
-                for (Long id : ids) {
-                    if (!used.contains(id)) {
-                        spendingId = id;
-                        byDetails++;
-                        break;
-                    }
+                        "SELECT id FROM spendings WHERE REGEXP_REPLACE(TRIM(details), '\\s+', ' ', 'g') = ? ORDER BY id",
+                        Long.class, normalizedDetails);
+                if (ids.size() == 1) {
+                    spendingId = firstUnused(used, ids);
+                    how = "details-unique";
+                }
+            }
+            if (spendingId == null && item.operationDate() != null && item.amount() != null && item.name() != null) {
+                String namePrefix = normalize(item.name());
+                if (namePrefix != null) {
+                    namePrefix = namePrefix.substring(0, Math.min(10, namePrefix.length()));
+                    spendingId = firstUnused(used, jdbcTemplate.queryForList(
+                            "SELECT id FROM spendings WHERE operation_date = ? AND amount = ? AND LEFT(REGEXP_REPLACE(TRIM(name), '\\s+', ' ', 'g'), 10) = ? ORDER BY id",
+                            Long.class, item.operationDate(), item.amount(), namePrefix));
+                    how = "date+amount+name";
                 }
             }
             if (spendingId == null && item.operationId() != null && item.operationDate() != null) {
-                List<Long> ids = jdbcTemplate.queryForList(
+                spendingId = firstUnused(used, jdbcTemplate.queryForList(
                         "SELECT id FROM spendings WHERE operation_id = ? AND operation_date = ?",
-                        Long.class, item.operationId(), item.operationDate());
-                if (!ids.isEmpty() && !used.contains(ids.get(0))) {
-                    spendingId = ids.get(0);
-                    byOperationId++;
-                }
+                        Long.class, item.operationId(), item.operationDate()));
+                how = "operationId+date";
             }
             if (spendingId == null) {
                 unmatched.add(new UnmatchedItem(item.operationId(), item.operationDate(), category, note, "no matching spending"));
                 continue;
             }
+            matchedBy.merge(how, 1, Integer::sum);
             used.add(spendingId);
 
             jdbcTemplate.update(
@@ -125,7 +145,16 @@ public class SpendingAnnotationImportController {
             }
         }
 
-        return new ImportResult(items.size(), byDetails, byOperationId, categoriesSet, notesSet, createdCategories, unmatched);
+        return new ImportResult(items.size(), matchedBy, categoriesSet, notesSet, createdCategories, unmatched);
+    }
+
+    private static Long firstUnused(Set<Long> used, List<Long> ids) {
+        for (Long id : ids) {
+            if (!used.contains(id)) {
+                return id;
+            }
+        }
+        return null;
     }
 
     private static String normalize(String s) {
