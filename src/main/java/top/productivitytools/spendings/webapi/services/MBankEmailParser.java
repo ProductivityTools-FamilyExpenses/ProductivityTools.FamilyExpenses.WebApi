@@ -28,12 +28,16 @@ public class MBankEmailParser {
     );
 
     /**
-     * e.g. "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostępne 6491,93 PLN".
+     * Two variants:
+     * <ul>
+     *   <li>daily snapshot: "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostępne 6491,93 PLN"</li>
+     *   <li>post-operation (no date): "mBank: Saldo rach. 17658578 Dostepne 0,00 USD." – the notification date is used</li>
+     * </ul>
      * The e-mail is iso-8859-2 and the "ę" is frequently lost or replaced on the way
      * (observed: "Dostpne", "Dost?pne", "Dost\uFFFDpne"), hence {@code Dost\S{0,2}pne}.
      */
     private static final Pattern BALANCE_PATTERN = Pattern.compile(
-            "^mBank: Saldo rach\\.\\s*(?<account>\\S+)\\s+w dniu\\s+(?<date>\\d{4}-\\d{2}-\\d{2})\\.?\\s+"
+            "^mBank: Saldo rach\\.\\s*(?<account>\\S+)\\s+(?:w dniu\\s+(?<date>\\d{4}-\\d{2}-\\d{2})\\.?\\s+)?"
                     + "Dost\\S{0,2}pne:?\\s+(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s*$"
     );
 
@@ -58,11 +62,12 @@ public class MBankEmailParser {
     }
 
     /**
-     * Extracts daily balance snapshots ("Saldo rach. ...") from the same attachment.
+     * Extracts balance snapshots ("Saldo rach. ...") from the same attachment.
      * These rows are not transactions, so they are kept apart from {@link #parseHtmlAttachment}.
      */
     public List<ParsedAccountBalance> parseAccountBalances(String messageId, String rawHtml) {
         Document doc = Jsoup.parse(rawHtml);
+        String notificationDate = extractDate(doc);
         List<List<String>> rows = extractRows(doc);
 
         List<ParsedAccountBalance> balances = new ArrayList<>();
@@ -70,7 +75,7 @@ public class MBankEmailParser {
             List<String> row = rows.get(rowIndex);
             if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
                 String operationId = messageId + "-" + rowIndex;
-                ParsedAccountBalance parsed = parseBalanceRow(operationId, row.get(0), row.get(1));
+                ParsedAccountBalance parsed = parseBalanceRow(operationId, notificationDate, row.get(0), row.get(1));
                 if (parsed != null) {
                     balances.add(parsed);
                 }
@@ -80,7 +85,10 @@ public class MBankEmailParser {
         return balances;
     }
 
-    public ParsedAccountBalance parseBalanceRow(String operationId, String time, String details) {
+    /**
+     * @param notificationDate date from the e-mail header (yyyy-MM-dd); used when the row itself has no "w dniu" date
+     */
+    public ParsedAccountBalance parseBalanceRow(String operationId, String notificationDate, String time, String details) {
         if (details == null || !details.startsWith(BALANCE_PREFIX)) {
             return null;
         }
@@ -88,10 +96,19 @@ public class MBankEmailParser {
         if (!m.matches()) {
             throw new IllegalArgumentException("Unrecognized mBank balance format: " + details);
         }
+        String rowDate = m.group("date");
+        LocalDate balanceDate;
+        if (rowDate != null) {
+            balanceDate = LocalDate.parse(rowDate);
+        } else if (notificationDate != null && !notificationDate.isBlank()) {
+            balanceDate = LocalDate.parse(notificationDate);
+        } else {
+            throw new IllegalArgumentException("Balance row has no date and the e-mail header date is missing: " + details);
+        }
         return new ParsedAccountBalance(
                 operationId,
                 m.group("account"),
-                LocalDate.parse(m.group("date")),
+                balanceDate,
                 time,
                 parseAmount(m.group("amount").replace(" ", "")),
                 m.group("currency"),
