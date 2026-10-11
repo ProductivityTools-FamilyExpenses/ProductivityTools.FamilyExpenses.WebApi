@@ -331,19 +331,19 @@ public class EmailProcessingService {
     }
 
     /**
-     * Uzupełnia konto (account) na podstawie dictionary_account (odpowiednik SetAccount.js)
-     * dla wierszy, które jeszcze go nie mają. Zwraca liczbę uzupełnionych wierszy.
+     * Uzupełnia konto (account_id -> dictionary_account) na podstawie numeru rachunku/karty
+     * (odpowiednik SetAccount.js) dla wierszy, które jeszcze go nie mają. Zwraca liczbę uzupełnionych wierszy.
      */
     public int fillAccounts() {
         ensureSpendingDetailsRows();
         return jdbcTemplate.update(
                 """
                 UPDATE spending_details sd
-                SET account = matched.account_name,
+                SET account_id = matched.account_id,
                     updated_at = NOW()
                 FROM (
                     SELECT s.id AS spending_id,
-                           COALESCE(da_src.name, da_dst.name) AS account_name
+                           COALESCE(da_src.id, da_dst.id) AS account_id
                     FROM spendings s
                     JOIN spending_details sd2 ON sd2.spending_id = s.id
                     LEFT JOIN dictionary_account da_src
@@ -352,8 +352,8 @@ public class EmailProcessingService {
                     LEFT JOIN dictionary_account da_dst
                            ON s.dst_account IS NOT NULL AND s.dst_account <> ''
                           AND (da_dst.key = s.dst_account OR LTRIM(da_dst.key, '0') = LTRIM(s.dst_account, '0'))
-                    WHERE (sd2.account IS NULL OR sd2.account = '')
-                      AND COALESCE(da_src.name, da_dst.name) IS NOT NULL
+                    WHERE sd2.account_id IS NULL
+                      AND COALESCE(da_src.id, da_dst.id) IS NOT NULL
                 ) matched
                 WHERE sd.spending_id = matched.spending_id
                 """
@@ -372,9 +372,10 @@ public class EmailProcessingService {
                 UPDATE spending_details sd
                 SET category = dc.name,
                     updated_at = NOW()
-                FROM dictionary_category dc
+                FROM dictionary_category dc, dictionary_account da
                 WHERE (sd.category IS NULL OR sd.category = '')
-                  AND sd.account = 'Wypłaty'
+                  AND da.id = sd.account_id
+                  AND da.name = 'Wypłaty'
                   AND dc.name = 'ProxyWypłaty'
                 """
         );

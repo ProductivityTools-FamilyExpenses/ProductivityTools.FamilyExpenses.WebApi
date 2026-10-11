@@ -36,7 +36,8 @@ public class SpendingController {
                    s.amount_left_currency,
                    s.details,
                    s.created_at,
-                   sd.account,
+                   sd.account_id,
+                   da.name AS account,
                    sd.category,
                    sd.note,
                    sd.allegro_raw_email_id,
@@ -44,6 +45,7 @@ public class SpendingController {
                    sd.updated_at AS details_updated_at
             FROM spendings s
             LEFT JOIN spending_details sd ON sd.spending_id = s.id
+            LEFT JOIN dictionary_account da ON da.id = sd.account_id
             LEFT JOIN mbank_raw_emails re ON re.id = s.raw_email_id
             ORDER BY COALESCE(
                          CASE
@@ -74,7 +76,9 @@ public class SpendingController {
     @PostMapping("/fill-accounts")
     public FillResult fillAccounts() {
         int updated = emailProcessingService.fillAccounts();
-        return new FillResult(updated, countEmpty("account"));
+        Integer missing = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM spending_details WHERE account_id IS NULL", Integer.class);
+        return new FillResult(updated, missing == null ? 0 : missing);
     }
 
     /** Fills missing {@code spending_details.category} from account rules and {@code dictionary_category_mapping}. */
@@ -119,6 +123,7 @@ public class SpendingController {
                 rs.getString("amount_left_currency"),
                 rs.getString("details"),
                 rs.getObject("created_at", OffsetDateTime.class),
+                rs.getObject("account_id", Long.class),
                 rs.getString("account"),
                 rs.getString("category"),
                 rs.getString("note"),

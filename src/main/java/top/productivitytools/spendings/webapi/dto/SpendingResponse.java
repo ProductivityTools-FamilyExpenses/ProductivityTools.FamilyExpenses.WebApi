@@ -5,8 +5,9 @@ import java.time.OffsetDateTime;
 
 /**
  * Row from {@code spendings} LEFT JOINed with {@code spending_details}.
- * Detail columns (account, category, note, allegroRawEmailId, detailsUpdatedAt)
- * are {@code null} when no spending_details row exists yet.
+ * Detail columns (accountId/account, category, note, allegroRawEmailId, detailsUpdatedAt)
+ * are {@code null} when no spending_details row exists yet. {@code account} is the name resolved
+ * from dictionary_account via {@code accountId}.
  */
 public record SpendingResponse(
         Long id,
@@ -24,6 +25,7 @@ public record SpendingResponse(
         String amountLeftCurrency,
         String details,
         OffsetDateTime createdAt,
+        Long accountId,
         String account,
         String category,
         String note,

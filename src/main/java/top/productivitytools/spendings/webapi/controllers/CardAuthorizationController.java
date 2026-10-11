@@ -33,11 +33,12 @@ public class CardAuthorizationController {
                        s.operation_date AS settled_operation_date,
                        s.amount         AS settled_amount,
                        s.currency       AS settled_currency,
-                       sd.account       AS settled_account,
+                       da.name          AS settled_account,
                        sd.category      AS settled_category
                 FROM card_authorizations ca
                 LEFT JOIN spendings s ON s.id = ca.settled_by_spending_id
                 LEFT JOIN spending_details sd ON sd.spending_id = s.id
+                LEFT JOIN dictionary_account da ON da.id = sd.account_id
                 ORDER BY ca.operation_date DESC NULLS LAST, ca.operation_time DESC NULLS LAST, ca.id DESC
                 """,
                 (rs, rowNum) -> new CardAuthorizationResponse(
