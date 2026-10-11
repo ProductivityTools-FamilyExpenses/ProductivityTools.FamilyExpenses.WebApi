@@ -18,7 +18,8 @@ import java.util.Map;
  * <ul>
  *   <li>duplicates ({@code spending_details.duplicate_of IS NOT NULL}) are excluded,</li>
  *   <li>internal money movements are excluded: category {@code PrzelewWlasny} and FX conversion legs ({@code *.NAT.TR.FX}),</li>
- *   <li>amounts are taken from {@code amount_pln}; rows without a PLN amount yet are skipped (see hygiene report).</li>
+ *   <li>amounts are taken from {@code amount_pln}; rows without a PLN amount yet are skipped (see hygiene report),</li>
+ *   <li>category reports are <em>net</em>: a refund booked in the same category reduces that category's spending.</li>
  * </ul>
  */
 @RestController
@@ -49,7 +50,7 @@ public class ReportController {
                           int unlinkedAuthorizations, int allegroEmailsWithoutSpending, int emailsInError,
                           int duplicates, List<HygieneCategory> proxyCategories, List<Map<String, Object>> uncategorizedSample) {}
 
-    /** Report 1: expenses per category per month (negative sums). */
+    /** Report 1: net amount per category per month – expenses plus refunds/incomes booked in the same category. */
     @GetMapping("/category-monthly")
     public List<CategoryMonth> categoryMonthly(@RequestParam String from, @RequestParam String to) {
         LocalDate fromDate = YearMonth.parse(from).atDay(1);
@@ -64,7 +65,7 @@ public class ReportController {
                     SELECT {OP_DATE} AS op_date, sd.category, s.amount_pln
                     FROM spendings s
                     JOIN spending_details sd ON sd.spending_id = s.id
-                    WHERE s.amount_pln < 0
+                    WHERE 1 = 1
                 {BASE_FILTER}
                 ) d
                 WHERE d.op_date BETWEEN ? AND ?
@@ -101,7 +102,7 @@ public class ReportController {
                     FROM spendings s
                     JOIN spending_details sd ON sd.spending_id = s.id
                     LEFT JOIN dictionary_account da ON da.id = sd.account_id
-                    WHERE s.amount_pln < 0
+                    WHERE 1 = 1
                 {BASE_FILTER}
                 ) d
                 WHERE d.op_date BETWEEN ? AND ?
