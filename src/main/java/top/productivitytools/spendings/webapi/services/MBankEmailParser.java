@@ -249,14 +249,25 @@ public class MBankEmailParser {
             );
         }
 
-        if (details.startsWith("mBank: Odmowa autoryzacji")
-                || details.startsWith("mBank: Potwierdzenie poprawnego")
-                || details.startsWith("mBank: Twoj przelew do")
-                || details.startsWith("mBank: Niepoprawne logowanie")) {
+        if (isInformationalMessage(details)) {
             return null;
         }
 
         throw new IllegalArgumentException("Unrecognized mBank operation format: " + details);
+    }
+
+    /** Notifications that are not money movements and are intentionally not stored. */
+    private static final List<String> INFORMATIONAL_PREFIXES = List.of(
+            "mBank: Odmowa autoryzacji",
+            "mBank: Potwierdzenie poprawnego",
+            "mBank: Twoj przelew do",
+            "mBank: Niepoprawne logowanie",
+            "mBank: Rachunek "           // e.g. "mBank: Rachunek EKONTO 85246191 jest w pelni aktywny. ..."
+    );
+
+    private static boolean isInformationalMessage(String details) {
+        return INFORMATIONAL_PREFIXES.stream().anyMatch(details::startsWith)
+                || details.contains(" jest w pelni aktywny");
     }
 
     private BigDecimal parseAmount(String raw) {
