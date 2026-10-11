@@ -9,6 +9,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
+import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
@@ -201,8 +202,118 @@ public class EmailProcessingService {
         ensureSpendingDetailsRows();
         fillAccounts();
         fillCategories();
+        // Powiąż autoryzacje kart z obciążeniami, które je rozliczyły (zwykle 1-2 dni później)
+        linkCardAuthorizationsToSpendings();
+        // Oznacz obciążenia będące lustrzanym zapisem przelewu wychodzącego
+        markTransferDuplicates();
         // Powiąż wydatki Allegro w spending_details z zamówieniami w allegro_raw_emails po kwocie i zbliżonej dacie (+/- 7 dni)
         linkAllegroPurchasesToSpendings();
+    }
+
+    /**
+     * For ~15% of outgoing transfers mBank also sends an "Obciazenie" with the same amount, the same account,
+     * the same day (usually the same minute) and the transfer <em>title</em> as its name
+     * ("... dla KACZMAREK .; PRZELEW SRODKOW;" ↔ "tytulem: PRZELEW SRODKOW"), or "P.SEPA WYCH." for SEPA.
+     * Such debits are marked as duplicates of the transfer (which is the richer record) and excluded from sums.
+     * Idempotent and incremental: only unmarked debits are considered, each transfer is used at most once.
+     * Returns the number of newly marked debits.
+     */
+    public int markTransferDuplicates() {
+        ensureSpendingDetailsRows();
+        int total = 0;
+        for (int pass = 0; pass < 10; pass++) {
+            int updated = jdbcTemplate.update(
+                    """
+                    UPDATE spending_details sd
+                    SET duplicate_of = m.transfer_id,
+                        updated_at = NOW()
+                    FROM (
+                        SELECT DISTINCT ON (transfer_id) debit_id, transfer_id
+                        FROM (
+                            SELECT DISTINCT ON (d.id) d.id AS debit_id, t.id AS transfer_id
+                            FROM spendings d
+                            JOIN spending_details dd ON dd.spending_id = d.id
+                            JOIN spendings t
+                              ON t.operation_type = 'Przelew wychodzacy'
+                             AND t.src_account = d.src_account
+                             AND t.amount = d.amount
+                             AND t.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                             AND d.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                             AND ABS(d.operation_date::date - t.operation_date::date) <= 1
+                             AND (
+                                   UPPER(d.name) LIKE 'P.SEPA%'
+                                   OR (
+                                        LENGTH(REGEXP_REPLACE(UPPER(REPLACE(d.name, '...', '')), '[^A-Z0-9]', '', 'g')) >= 3
+                                    AND LENGTH(REGEXP_REPLACE(UPPER(SPLIT_PART(t.name, ';', 2)), '[^A-Z0-9]', '', 'g')) >= 3
+                                    AND LEFT(REGEXP_REPLACE(UPPER(REPLACE(d.name, '...', '')), '[^A-Z0-9]', '', 'g'), 6)
+                                      = LEFT(REGEXP_REPLACE(UPPER(SPLIT_PART(t.name, ';', 2)), '[^A-Z0-9]', '', 'g'), 6)
+                                   )
+                                 )
+                             AND NOT EXISTS (SELECT 1 FROM spending_details used WHERE used.duplicate_of = t.id)
+                            WHERE d.operation_type = 'Obciazenie'
+                              AND dd.duplicate_of IS NULL
+                            ORDER BY d.id,
+                                     ABS(d.operation_date::date - t.operation_date::date),
+                                     CASE WHEN t.operation_time = d.operation_time THEN 0 ELSE 1 END,
+                                     t.id
+                        ) best_per_debit
+                        ORDER BY transfer_id, debit_id
+                    ) m
+                    WHERE sd.spending_id = m.debit_id
+                    """
+            );
+            total += updated;
+            if (updated == 0) {
+                break;
+            }
+        }
+        return total;
+    }
+
+    /**
+     * Matches card authorizations with the "Obciazenie" that booked them: same (negative) amount,
+     * booking 0-7 days after the authorization, merchant name sharing the first 6 significant characters
+     * (the debit title is truncated, e.g. "ZABKA Z7239 ..." vs "ZABKA Z7239 K.2 WARSZAWA").
+     * Foreign-currency authorizations are booked in PLN with a different amount and stay unlinked.
+     * Returns the number of newly linked authorizations.
+     */
+    public int linkCardAuthorizationsToSpendings() {
+        int total = 0;
+        // Each pass assigns every debit at most once; repeat for authorizations that lost the tie.
+        for (int pass = 0; pass < 10; pass++) {
+            int updated = jdbcTemplate.update(
+                    """
+                    UPDATE card_authorizations ca
+                    SET settled_by_spending_id = m.spending_id
+                    FROM (
+                        SELECT DISTINCT ON (spending_id) auth_id, spending_id
+                        FROM (
+                            SELECT DISTINCT ON (ca2.id) ca2.id AS auth_id, s.id AS spending_id
+                            FROM card_authorizations ca2
+                            JOIN spendings s
+                              ON s.operation_type = 'Obciazenie'
+                             AND s.amount = ca2.amount
+                             AND s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                             AND ca2.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                             AND s.operation_date::date BETWEEN ca2.operation_date::date AND ca2.operation_date::date + 7
+                             AND LEFT(REGEXP_REPLACE(UPPER(s.name), '[^A-Z0-9]', '', 'g'), 6)
+                               = LEFT(REGEXP_REPLACE(UPPER(ca2.merchant), '[^A-Z0-9]', '', 'g'), 6)
+                             AND LENGTH(REGEXP_REPLACE(UPPER(ca2.merchant), '[^A-Z0-9]', '', 'g')) >= 6
+                             AND NOT EXISTS (SELECT 1 FROM card_authorizations used WHERE used.settled_by_spending_id = s.id)
+                            WHERE ca2.settled_by_spending_id IS NULL
+                            ORDER BY ca2.id, s.operation_date, s.operation_time, s.id
+                        ) best_per_auth
+                        ORDER BY spending_id, auth_id
+                    ) m
+                    WHERE ca.id = m.auth_id
+                    """
+            );
+            total += updated;
+            if (updated == 0) {
+                break;
+            }
+        }
+        return total;
     }
 
     /** Tworzy brakujące rekordy 1-1 w spending_details dla każdego wpisu w spendings. */
@@ -369,6 +480,34 @@ public class EmailProcessingService {
                         spending.amountLeft(),
                         spending.amountLeftCurrency(),
                         spending.details()
+                );
+            }
+
+            List<ParsedCardAuthorization> authorizations = mBankEmailParser.parseCardAuthorizations(
+                    rawEmail.messageId(),
+                    rawEmail.rawHtml()
+            );
+
+            for (ParsedCardAuthorization auth : authorizations) {
+                jdbcTemplate.update(
+                        """
+                        INSERT INTO card_authorizations (
+                            raw_email_id, operation_id, operation_date, operation_time, card, merchant,
+                            amount, currency, amount_left, amount_left_currency, details
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (operation_id) DO NOTHING
+                        """,
+                        rawEmail.id(),
+                        auth.operationId(),
+                        auth.operationDate(),
+                        auth.operationTime(),
+                        auth.card(),
+                        auth.merchant(),
+                        auth.amount(),
+                        auth.currency(),
+                        auth.amountLeft(),
+                        auth.amountLeftCurrency(),
+                        auth.details()
                 );
             }
 

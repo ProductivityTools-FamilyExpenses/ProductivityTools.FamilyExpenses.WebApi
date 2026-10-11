@@ -51,7 +51,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         // Manual triggers from the WebApp – require a signed-in user
-                        .requestMatchers(HttpMethod.POST, "/api/emails/process", "/api/spendings/fill-*").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/emails/process", "/api/spendings/fill-*", "/api/spendings/mark-duplicates").authenticated()
                         // Data ingestion from Google Apps Script – intentionally unauthenticated for now
                         .requestMatchers(HttpMethod.POST, "/api/**").permitAll()
                         // Simple liveness probe

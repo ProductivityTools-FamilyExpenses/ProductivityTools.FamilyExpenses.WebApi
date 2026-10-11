@@ -28,6 +28,8 @@ public record SpendingResponse(
         String category,
         String note,
         Long allegroRawEmailId,
+        /** id of the canonical spending this row duplicates (e.g. debit mirroring a transfer); null = count it */
+        Long duplicateOf,
         OffsetDateTime detailsUpdatedAt
 ) {
 }

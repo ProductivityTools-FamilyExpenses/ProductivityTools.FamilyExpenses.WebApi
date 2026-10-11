@@ -6,6 +6,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
+import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.math.BigDecimal;
@@ -20,6 +21,16 @@ public class MBankEmailParser {
 
     private static final String BALANCE_PREFIX = "mBank: Saldo rach.";
     private static final String CARD_TOPUP_PREFIX = "mBank: Zaladowanie karty";
+    private static final String CARD_AUTH_PREFIX = "mBank: Autoryzacja karty";
+
+    /**
+     * e.g. "mBank: Autoryzacja karty 5575***5205: ZABKA Z7239 K.2 WARSZAWA. Kwota: 8,99 PLN. Dostepne: 7992,73 PLN."
+     * (older template: "... Kwota: 45,60 PLN. Dost.: 1200,00 PLN."). Merchant may itself contain ':' or '.'.
+     */
+    private static final Pattern CARD_AUTH_PATTERN = Pattern.compile(
+            "^mBank: Autoryzacja karty\\s+(?<card>\\S+?):\\s*(?<merchant>.*?)\\.?\\s*Kwota:\\s*(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s*"
+                    + "Dost\\S*:?\\s*(?<left>-?[\\d\\s]*\\d(?:,\\d{1,2})?)\\s*(?<leftCurrency>[A-Z]{3})?\\.?\\s*$"
+    );
 
     /** e.g. "mBank: Zaladowanie karty: 4281***3044 kwota: 30,00 PLN. Dostepne na rachunku: 83018384 39,92 PLN." */
     private static final Pattern CARD_TOPUP_PATTERN = Pattern.compile(
@@ -83,6 +94,50 @@ public class MBankEmailParser {
         }
 
         return balances;
+    }
+
+    /**
+     * Extracts card pre-authorizations ("Autoryzacja karty ...") from the attachment.
+     * They are blocks, not bookings (the booking arrives 1-2 days later as "Obciazenie"),
+     * and we only receive them for the mailbox owner's cards – hence a separate table.
+     */
+    public List<ParsedCardAuthorization> parseCardAuthorizations(String messageId, String rawHtml) {
+        Document doc = Jsoup.parse(rawHtml);
+        String date = extractDate(doc);
+        List<List<String>> rows = extractRows(doc);
+
+        List<ParsedCardAuthorization> auths = new ArrayList<>();
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<String> row = rows.get(rowIndex);
+            if (row.size() >= 2 && !row.get(0).startsWith("Czas")) {
+                String operationId = messageId + "-" + rowIndex;
+                ParsedCardAuthorization parsed = parseCardAuthorizationRow(operationId, date, row.get(0), row.get(1));
+                if (parsed != null) {
+                    auths.add(parsed);
+                }
+            }
+        }
+        return auths;
+    }
+
+    public ParsedCardAuthorization parseCardAuthorizationRow(String operationId, String date, String time, String details) {
+        if (details == null || !details.startsWith(CARD_AUTH_PREFIX)) {
+            return null;
+        }
+        Matcher m = CARD_AUTH_PATTERN.matcher(details.trim());
+        if (!m.matches()) {
+            throw new IllegalArgumentException("Unrecognized mBank card authorization format: " + details);
+        }
+        return new ParsedCardAuthorization(
+                operationId, date, time,
+                m.group("card"),
+                m.group("merchant").trim(),
+                parseAmount(m.group("amount").replace(" ", "")).negate(),
+                m.group("currency"),
+                m.group("left"),
+                m.group("leftCurrency"),
+                details
+        );
     }
 
     /**
@@ -175,28 +230,9 @@ public class MBankEmailParser {
             );
         }
 
-        if (details.startsWith("mBank: Autoryzacja karty")) {
-            String[] spaceSegments = details.split(" ");
-            String srcCard = spaceSegments[3].replace(":", "").trim();
-
-            String[] colonSegments = details.split(":");
-            String name = colonSegments[2].replace(". Kwota", "").trim();
-
-            String amountRaw = colonSegments[3].trim();
-            String[] amountParts = amountRaw.split(" ");
-            BigDecimal amount = parseAmount(amountParts[0]).negate();
-            String currency = amountParts[1].replace(".", "");
-
-            String amountLeftRaw = colonSegments[4].trim();
-            String[] amountLeftParts = amountLeftRaw.split(" ");
-            String amountLeft = amountLeftParts[0];
-            String amountLeftCurrency = amountLeftParts.length > 1 ? amountLeftParts[1].replace(".", "") : "";
-
-            return new ParsedSpending(
-                    operationId, date, time, "Autoryzacja karty",
-                    srcCard, "", amount, currency, name,
-                    amountLeft, amountLeftCurrency, details
-            );
+        // Card pre-authorizations are stored in card_authorizations, see parseCardAuthorizations()
+        if (details.startsWith(CARD_AUTH_PREFIX)) {
+            return null;
         }
 
         if (details.startsWith("mBank: Przelew wych")) {

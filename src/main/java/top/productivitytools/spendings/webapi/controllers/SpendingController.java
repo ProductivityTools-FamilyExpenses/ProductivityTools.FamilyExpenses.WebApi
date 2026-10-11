@@ -40,6 +40,7 @@ public class SpendingController {
                    sd.category,
                    sd.note,
                    sd.allegro_raw_email_id,
+                   sd.duplicate_of,
                    sd.updated_at AS details_updated_at
             FROM spendings s
             LEFT JOIN spending_details sd ON sd.spending_id = s.id
@@ -83,6 +84,15 @@ public class SpendingController {
         return new FillResult(updated, countEmpty("category"));
     }
 
+    /** Marks debits that mirror an outgoing transfer as duplicates (excluded from sums). */
+    @PostMapping("/mark-duplicates")
+    public FillResult markDuplicates() {
+        int updated = emailProcessingService.markTransferDuplicates();
+        Integer total = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM spending_details WHERE duplicate_of IS NOT NULL", Integer.class);
+        return new FillResult(updated, total == null ? 0 : total);
+    }
+
     private int countEmpty(String column) {
         // column is a fixed identifier chosen by this class, never user input
         Integer count = jdbcTemplate.queryForObject(
@@ -113,6 +123,7 @@ public class SpendingController {
                 rs.getString("category"),
                 rs.getString("note"),
                 rs.getObject("allegro_raw_email_id", Long.class),
+                rs.getObject("duplicate_of", Long.class),
                 rs.getObject("details_updated_at", OffsetDateTime.class)
         );
     }
