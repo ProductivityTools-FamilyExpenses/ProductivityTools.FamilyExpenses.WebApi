@@ -275,21 +275,26 @@ public class EmailProcessingService {
         updated += jdbcTemplate.update(
                 """
                 UPDATE spendings s
-                SET amount_pln = ROUND(s.amount * er.rate, 2),
-                    fx_rate = er.rate,
-                    fx_rate_date = er.rate_date
-                FROM LATERAL (
-                    SELECT rate, rate_date
-                    FROM exchange_rates x
-                    WHERE x.currency = s.currency
-                      AND x.rate_date < s.operation_date::date
-                    ORDER BY x.rate_date DESC
-                    LIMIT 1
-                ) er
-                WHERE s.amount_pln IS NULL
-                  AND s.currency IS NOT NULL AND s.currency <> '' AND s.currency <> 'PLN'
-                  AND s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-                  AND s.operation_date::date - er.rate_date <= 10
+                SET amount_pln = ROUND(s.amount * m.rate, 2),
+                    fx_rate = m.rate,
+                    fx_rate_date = m.rate_date
+                FROM (
+                    SELECT sp.id AS spending_id, x.rate, x.rate_date
+                    FROM spendings sp
+                    JOIN LATERAL (
+                        SELECT rate, rate_date
+                        FROM exchange_rates er
+                        WHERE er.currency = sp.currency
+                          AND er.rate_date < sp.operation_date::date
+                        ORDER BY er.rate_date DESC
+                        LIMIT 1
+                    ) x ON TRUE
+                    WHERE sp.amount_pln IS NULL
+                      AND sp.currency IS NOT NULL AND sp.currency <> '' AND sp.currency <> 'PLN'
+                      AND sp.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                      AND sp.operation_date::date - x.rate_date <= 10
+                ) m
+                WHERE s.id = m.spending_id
                 """
         );
         return updated;

@@ -68,7 +68,8 @@ public class NbpExchangeRateService {
                 "SELECT COUNT(*) FROM exchange_rates WHERE currency = ? AND rate_date BETWEEN ? AND ?",
                 Integer.class, currency, from, to);
         long days = to.toEpochDay() - from.toEpochDay() + 1;
-        long expectedBusinessDaysMin = Math.max(1, days * 5 / 7 - 4); // allow a few holidays
+        // ~5/7 business days minus public holidays (observed: 59-60 rates per 93-day quarter)
+        long expectedBusinessDaysMin = Math.max(1, days * 5 / 7 - 10);
         return count != null && count >= expectedBusinessDaysMin;
     }
 
