@@ -76,6 +76,44 @@ public class ReportController {
                 fromDate, toDate);
     }
 
+    public record CategoryDetail(Long id, String operationDate, String operationTime, String operationType,
+                                 String name, BigDecimal amount, String currency, BigDecimal amountPln,
+                                 String account, String category, String note) {}
+
+    /**
+     * Drill-down for the pivot: the spendings behind a (category, month) cell. Same filters as the pivot.
+     * {@code category} may be omitted (= all categories in the range) or be "(bez kategorii)" for uncategorised rows.
+     */
+    @GetMapping("/category-monthly/details")
+    public List<CategoryDetail> categoryMonthlyDetails(@RequestParam String from, @RequestParam String to,
+                                                       @RequestParam(required = false) String category) {
+        LocalDate fromDate = YearMonth.parse(from).atDay(1);
+        LocalDate toDate = YearMonth.parse(to).atEndOfMonth();
+        boolean all = category == null || category.isBlank();
+        boolean uncategorised = "(bez kategorii)".equals(category);
+        return jdbcTemplate.query(
+                """
+                SELECT d.*
+                FROM (
+                    SELECT s.id, s.operation_date, s.operation_time, s.operation_type, s.name,
+                           s.amount, s.currency, s.amount_pln, da.name AS account, sd.category, sd.note,
+                           {OP_DATE} AS op_date
+                    FROM spendings s
+                    JOIN spending_details sd ON sd.spending_id = s.id
+                    LEFT JOIN dictionary_account da ON da.id = sd.account_id
+                    WHERE s.amount_pln < 0
+                {BASE_FILTER}
+                ) d
+                WHERE d.op_date BETWEEN ? AND ?
+                  AND (? OR (? AND (d.category IS NULL OR d.category = '')) OR d.category = ?)
+                ORDER BY d.op_date, d.operation_time, d.id
+                """.replace("{OP_DATE}", OP_DATE).replace("{BASE_FILTER}", BASE_FILTER),
+                (rs, n) -> new CategoryDetail(rs.getLong("id"), rs.getString("operation_date"), rs.getString("operation_time"),
+                        rs.getString("operation_type"), rs.getString("name"), rs.getBigDecimal("amount"), rs.getString("currency"),
+                        rs.getBigDecimal("amount_pln"), rs.getString("account"), rs.getString("category"), rs.getString("note")),
+                fromDate, toDate, all, uncategorised, category == null ? "" : category);
+    }
+
     /** Report 2: income / expenses / net per month and account (account = dictionary name or raw number). */
     @GetMapping("/cashflow")
     public List<CashflowMonth> cashflow(@RequestParam String from, @RequestParam String to) {
