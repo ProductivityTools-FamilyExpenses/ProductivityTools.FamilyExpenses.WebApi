@@ -12,6 +12,7 @@ import top.productivitytools.spendings.webapi.services.EmailProcessingService;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -31,6 +32,9 @@ public class SpendingController {
                    s.dst_account,
                    s.amount,
                    s.currency,
+                   s.amount_pln,
+                   s.fx_rate,
+                   s.fx_rate_date,
                    s.name,
                    s.amount_left,
                    s.amount_left_currency,
@@ -88,6 +92,15 @@ public class SpendingController {
         return new FillResult(updated, countEmpty("category"));
     }
 
+    /** Converts foreign-currency amounts to PLN using NBP mid rates (D-1). */
+    @PostMapping("/fill-pln")
+    public FillResult fillPln() {
+        int updated = emailProcessingService.fillAmountsPln();
+        Integer missing = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM spendings WHERE amount_pln IS NULL", Integer.class);
+        return new FillResult(updated, missing == null ? 0 : missing);
+    }
+
     /** Marks debits that mirror an outgoing transfer as duplicates (excluded from sums). */
     @PostMapping("/mark-duplicates")
     public FillResult markDuplicates() {
@@ -118,6 +131,9 @@ public class SpendingController {
                 rs.getString("dst_account"),
                 rs.getBigDecimal("amount"),
                 rs.getString("currency"),
+                rs.getBigDecimal("amount_pln"),
+                rs.getBigDecimal("fx_rate"),
+                rs.getObject("fx_rate_date", LocalDate.class),
                 rs.getString("name"),
                 rs.getString("amount_left"),
                 rs.getString("amount_left_currency"),

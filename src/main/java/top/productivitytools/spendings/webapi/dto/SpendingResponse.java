@@ -1,6 +1,7 @@
 package top.productivitytools.spendings.webapi.dto;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 /**
@@ -20,6 +21,10 @@ public record SpendingResponse(
         String dstAccount,
         BigDecimal amount,
         String currency,
+        /** amount converted to PLN (equal to amount for PLN rows); null until a rate is available */
+        BigDecimal amountPln,
+        BigDecimal fxRate,
+        LocalDate fxRateDate,
         String name,
         String amountLeft,
         String amountLeftCurrency,

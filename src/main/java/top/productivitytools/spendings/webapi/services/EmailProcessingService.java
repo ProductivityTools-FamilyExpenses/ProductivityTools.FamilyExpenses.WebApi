@@ -13,6 +13,7 @@ import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
@@ -25,6 +26,7 @@ public class EmailProcessingService {
     private final JdbcTemplate jdbcTemplate;
     private final MBankEmailParser mBankEmailParser;
     private final AllegroEmailParser allegroEmailParser;
+    private final NbpExchangeRateService nbpExchangeRateService;
     private final ReentrantLock lock = new ReentrantLock();
 
     private record RawEmailRow(Long id, String messageId, String source, String rawHtml) {}
@@ -221,12 +223,76 @@ public class EmailProcessingService {
         ensureSpendingDetailsRows();
         fillAccounts();
         fillCategories();
+        // Przelicz kwoty w walutach obcych na PLN po kursie średnim NBP
+        fillAmountsPln();
         // Powiąż autoryzacje kart z obciążeniami, które je rozliczyły (zwykle 1-2 dni później)
         linkCardAuthorizationsToSpendings();
         // Oznacz obciążenia będące lustrzanym zapisem przelewu wychodzącego
         markTransferDuplicates();
         // Powiąż wydatki Allegro w spending_details z zamówieniami w allegro_raw_emails po kwocie i zbliżonej dacie (+/- 7 dni)
         linkAllegroPurchasesToSpendings();
+    }
+
+    private record CurrencyRange(String currency, LocalDate from, LocalDate to) {}
+
+    /**
+     * Fills {@code spendings.amount_pln} for rows that do not have it yet.
+     * PLN rows are copied as-is; other currencies use the NBP table A mid rate of the last business day
+     * <em>before</em> the operation date (the convention used in Polish accounting), looked up in the
+     * {@code exchange_rates} cache, which is topped up from api.nbp.pl on demand.
+     * Rows whose rate is not available (NBP down, date not parseable) stay NULL and are retried next time.
+     * Returns the number of rows converted.
+     */
+    public int fillAmountsPln() {
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE spendings
+                SET amount_pln = amount, fx_rate = 1, fx_rate_date = NULL
+                WHERE amount_pln IS NULL AND (currency = 'PLN' OR currency IS NULL OR currency = '')
+                """
+        );
+
+        // Which (currency, date range) do we still need rates for?
+        List<CurrencyRange> ranges = jdbcTemplate.query(
+                """
+                SELECT currency, MIN(operation_date::date) AS from_date, MAX(operation_date::date) AS to_date
+                FROM spendings
+                WHERE amount_pln IS NULL
+                  AND currency IS NOT NULL AND currency <> '' AND currency <> 'PLN'
+                  AND operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                GROUP BY currency
+                """,
+                (rs, n) -> new CurrencyRange(
+                        rs.getString("currency"),
+                        rs.getObject("from_date", LocalDate.class),
+                        rs.getObject("to_date", LocalDate.class))
+        );
+        for (CurrencyRange r : ranges) {
+            // D-1 rule: the rate may be up to ~10 days older than the operation (holidays), so start the cache earlier
+            nbpExchangeRateService.ensureRates(r.currency(), r.from().minusDays(10), r.to());
+        }
+
+        updated += jdbcTemplate.update(
+                """
+                UPDATE spendings s
+                SET amount_pln = ROUND(s.amount * er.rate, 2),
+                    fx_rate = er.rate,
+                    fx_rate_date = er.rate_date
+                FROM LATERAL (
+                    SELECT rate, rate_date
+                    FROM exchange_rates x
+                    WHERE x.currency = s.currency
+                      AND x.rate_date < s.operation_date::date
+                    ORDER BY x.rate_date DESC
+                    LIMIT 1
+                ) er
+                WHERE s.amount_pln IS NULL
+                  AND s.currency IS NOT NULL AND s.currency <> '' AND s.currency <> 'PLN'
+                  AND s.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                  AND s.operation_date::date - er.rate_date <= 10
+                """
+        );
+        return updated;
     }
 
     /**
