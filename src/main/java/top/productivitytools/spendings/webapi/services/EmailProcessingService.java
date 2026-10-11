@@ -229,6 +229,8 @@ public class EmailProcessingService {
         linkCardAuthorizationsToSpendings();
         // Oznacz obciążenia będące lustrzanym zapisem przelewu wychodzącego
         markTransferDuplicates();
+        // Kategoria/notatka wpisana na jednej połówce pary duplikatów ma obowiązywać na drugiej
+        syncDuplicateAnnotations();
         // Powiąż wydatki Allegro w spending_details z zamówieniami w allegro_raw_emails po kwocie i zbliżonej dacie (+/- 7 dni)
         linkAllegroPurchasesToSpendings();
     }
@@ -360,6 +362,46 @@ public class EmailProcessingService {
             }
         }
         return total;
+    }
+
+    /**
+     * Within a duplicate pair (debit -> transfer) the user may have annotated either row (the legacy sheet
+     * categorised the debit, the UI shows the transfer). Copies category and note to whichever side is empty,
+     * so reports (which use the canonical row) and the hidden duplicate agree. Returns rows updated.
+     */
+    public int syncDuplicateAnnotations() {
+        int updated = 0;
+        // duplicate -> canonical
+        updated += jdbcTemplate.update(
+                """
+                UPDATE spending_details canon
+                SET category = COALESCE(NULLIF(canon.category, ''), dup.category),
+                    note = COALESCE(NULLIF(canon.note, ''), dup.note),
+                    updated_at = NOW()
+                FROM spending_details dup
+                WHERE dup.duplicate_of = canon.spending_id
+                  AND (
+                        ((canon.category IS NULL OR canon.category = '') AND dup.category IS NOT NULL AND dup.category <> '')
+                     OR ((canon.note IS NULL OR canon.note = '') AND dup.note IS NOT NULL AND dup.note <> '')
+                  )
+                """
+        );
+        // canonical -> duplicate
+        updated += jdbcTemplate.update(
+                """
+                UPDATE spending_details dup
+                SET category = COALESCE(NULLIF(dup.category, ''), canon.category),
+                    note = COALESCE(NULLIF(dup.note, ''), canon.note),
+                    updated_at = NOW()
+                FROM spending_details canon
+                WHERE dup.duplicate_of = canon.spending_id
+                  AND (
+                        ((dup.category IS NULL OR dup.category = '') AND canon.category IS NOT NULL AND canon.category <> '')
+                     OR ((dup.note IS NULL OR dup.note = '') AND canon.note IS NOT NULL AND canon.note <> '')
+                  )
+                """
+        );
+        return updated;
     }
 
     /**

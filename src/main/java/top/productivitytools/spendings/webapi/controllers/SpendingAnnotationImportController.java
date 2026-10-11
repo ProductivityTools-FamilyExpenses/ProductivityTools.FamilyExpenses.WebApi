@@ -27,6 +27,7 @@ import java.util.Set;
 public class SpendingAnnotationImportController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final top.productivitytools.spendings.webapi.services.EmailProcessingService emailProcessingService;
 
     public record AnnotationItem(String operationId, String operationDate, String details,
                                  java.math.BigDecimal amount, String name, String category, String note) {}
@@ -145,6 +146,9 @@ public class SpendingAnnotationImportController {
             }
         }
 
+        // annotations written to a duplicate row must also show on its canonical counterpart (and vice versa)
+        int synced = emailProcessingService.syncDuplicateAnnotations();
+        matchedBy.put("syncedDuplicatePairs", synced);
         return new ImportResult(items.size(), matchedBy, categoriesSet, notesSet, createdCategories, unmatched);
     }
 
