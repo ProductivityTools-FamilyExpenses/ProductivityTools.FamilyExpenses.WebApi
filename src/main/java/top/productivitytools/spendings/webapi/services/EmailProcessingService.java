@@ -166,12 +166,21 @@ public class EmailProcessingService {
                 }
             }
 
+            // Allegro e-mails: same strict id-order processing as mBank so allegro_purchases ids stay chronological
+            allegroLoop:
             while (true) {
+                Long firstAllegroErrorId = jdbcTemplate.queryForObject(
+                        "SELECT MIN(id) FROM allegro_raw_emails WHERE status = 'ERROR'",
+                        Long.class
+                );
+                long allegroUpperBound = firstAllegroErrorId != null ? firstAllegroErrorId : Long.MAX_VALUE;
+
                 List<AllegroRawEmailRow> pendingAllegroEmails = jdbcTemplate.query(
                         """
                         SELECT id, message_id, email_date, raw_html
                         FROM allegro_raw_emails
                         WHERE status = 'NEW'
+                          AND id < ?
                         ORDER BY id ASC
                         LIMIT 50
                         """,
@@ -180,16 +189,26 @@ public class EmailProcessingService {
                                 rs.getString("message_id"),
                                 rs.getObject("email_date", OffsetDateTime.class),
                                 rs.getString("raw_html")
-                        )
+                        ),
+                        allegroUpperBound
                 );
 
                 if (pendingAllegroEmails.isEmpty()) {
+                    if (firstAllegroErrorId != null) {
+                        log.warn("Allegro processing blocked: e-mail id={} is in ERROR; newer e-mails wait until it is fixed",
+                                firstAllegroErrorId);
+                    }
                     break;
                 }
 
                 for (AllegroRawEmailRow allegroEmail : pendingAllegroEmails) {
-                    processSingleAllegroEmail(allegroEmail);
+                    boolean ok = processSingleAllegroEmail(allegroEmail);
                     processedCount++;
+                    if (!ok) {
+                        log.warn("Allegro processing stopped at e-mail id={} (ERROR); newer e-mails wait until it is fixed",
+                                allegroEmail.id());
+                        break allegroLoop;
+                    }
                 }
             }
 
@@ -561,7 +580,7 @@ public class EmailProcessingService {
         }
     }
 
-    private void processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {
+    private boolean processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {
         try {
             List<ParsedAllegroPurchase> purchases = allegroEmailParser.parseEmailBody(
                     allegroEmail.messageId(),
@@ -598,6 +617,7 @@ public class EmailProcessingService {
                     """,
                     allegroEmail.id()
             );
+            return true;
         } catch (Exception ex) {
             log.error("Failed to parse Allegro email id={} messageId={}", allegroEmail.id(), allegroEmail.messageId(), ex);
             jdbcTemplate.update(
@@ -609,6 +629,7 @@ public class EmailProcessingService {
                     ex.getMessage(),
                     allegroEmail.id()
             );
+            return false;
         }
     }
 }
