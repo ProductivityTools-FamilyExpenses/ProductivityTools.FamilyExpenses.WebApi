@@ -231,7 +231,7 @@ public class EmailProcessingService {
 
     /**
      * For ~15% of outgoing transfers mBank also sends an "Obciazenie" with the same amount, the same account,
-     * the same day (usually the same minute) and the transfer <em>title</em> as its name
+     * the same day or up to a few days earlier (weekend order -> Monday execution) and the transfer <em>title</em> as its name
      * ("... dla KACZMAREK .; PRZELEW SRODKOW;" ↔ "tytulem: PRZELEW SRODKOW"), or "P.SEPA WYCH." for SEPA.
      * Such debits are marked as duplicates of the transfer (which is the richer record) and excluded from sums.
      * Idempotent and incremental: only unmarked debits are considered, each transfer is used at most once.
@@ -258,7 +258,9 @@ public class EmailProcessingService {
                              AND t.amount = d.amount
                              AND t.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
                              AND d.operation_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-                             AND ABS(d.operation_date::date - t.operation_date::date) <= 1
+                             -- the debit is booked when the transfer is ordered; the transfer itself is executed in the
+                             -- next Elixir session (same day, or Monday 06:xx for weekend orders -> up to 3-4 days later)
+                             AND t.operation_date::date BETWEEN d.operation_date::date AND d.operation_date::date + 4
                              AND (
                                    UPPER(d.name) LIKE 'P.SEPA%'
                                    OR (
@@ -272,7 +274,7 @@ public class EmailProcessingService {
                             WHERE d.operation_type = 'Obciazenie'
                               AND dd.duplicate_of IS NULL
                             ORDER BY d.id,
-                                     ABS(d.operation_date::date - t.operation_date::date),
+                                     t.operation_date::date - d.operation_date::date,
                                      CASE WHEN t.operation_time = d.operation_time THEN 0 ELSE 1 END,
                                      t.id
                         ) best_per_debit
