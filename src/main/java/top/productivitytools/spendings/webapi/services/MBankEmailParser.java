@@ -285,7 +285,12 @@ public class MBankEmailParser {
             "mBank: Potwierdzenie poprawnego",
             "mBank: Twoj przelew do",
             "mBank: Niepoprawne logowanie",
-            "mBank: Rachunek "           // e.g. "mBank: Rachunek EKONTO 85246191 jest w pelni aktywny. ..."
+            "mBank: Rachunek ",           // e.g. "mBank: Rachunek EKONTO 85246191 jest w pelni aktywny. ..."
+            "mBank: Wydano karte",        // e.g. "mBank: Wydano karte 4056***1866 dla ... do rach.: 42109862. Karta zostanie przeslana poczta."
+            "mBank: Karta ",              // card activated / blocked / expiring notices
+            "mBank: Aktywacja karty",
+            "mBank: Zastrzezenie karty",
+            "mBank: Zmiana limitu"
     );
 
     private static boolean isInformationalMessage(String details) {
