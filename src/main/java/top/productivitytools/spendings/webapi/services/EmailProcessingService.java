@@ -117,12 +117,23 @@ public class EmailProcessingService {
     private int processPendingEmailsLocked() {
         int processedCount = 0;
         {
+            // mBank e-mails are processed strictly in id order (= e-mail chronology, see spendings.js).
+            // An e-mail in ERROR blocks all newer ones: skipping it would give the newer e-mails'
+            // spendings lower ids than the failed e-mail's spendings once it is fixed and re-run.
+            mbankLoop:
             while (true) {
+                Long firstErrorId = jdbcTemplate.queryForObject(
+                        "SELECT MIN(id) FROM mbank_raw_emails WHERE status = 'ERROR'",
+                        Long.class
+                );
+                long upperBoundExclusive = firstErrorId != null ? firstErrorId : Long.MAX_VALUE;
+
                 List<RawEmailRow> pendingEmails = jdbcTemplate.query(
                         """
                         SELECT id, message_id, source, raw_html
                         FROM mbank_raw_emails
                         WHERE status = 'NEW' AND source = 'MBANK'
+                          AND id < ?
                         ORDER BY id ASC
                         LIMIT 50
                         """,
@@ -131,16 +142,26 @@ public class EmailProcessingService {
                                 rs.getString("message_id"),
                                 rs.getString("source"),
                                 rs.getString("raw_html")
-                        )
+                        ),
+                        upperBoundExclusive
                 );
 
                 if (pendingEmails.isEmpty()) {
+                    if (firstErrorId != null) {
+                        log.warn("mBank processing blocked: e-mail id={} is in ERROR; newer e-mails wait until it is fixed",
+                                firstErrorId);
+                    }
                     break;
                 }
 
                 for (RawEmailRow rawEmail : pendingEmails) {
-                    processSingleMBankEmail(rawEmail);
+                    boolean ok = processSingleMBankEmail(rawEmail);
                     processedCount++;
+                    if (!ok) {
+                        log.warn("mBank processing stopped at e-mail id={} (ERROR); newer e-mails wait until it is fixed",
+                                rawEmail.id());
+                        break mbankLoop;
+                    }
                 }
             }
 
@@ -318,7 +339,7 @@ public class EmailProcessingService {
         }
     }
 
-    private void processSingleMBankEmail(RawEmailRow rawEmail) {
+    private boolean processSingleMBankEmail(RawEmailRow rawEmail) {
         try {
             List<ParsedSpending> spendings = mBankEmailParser.parseHtmlAttachment(
                     rawEmail.messageId(),
@@ -384,6 +405,7 @@ public class EmailProcessingService {
                     """,
                     rawEmail.id()
             );
+            return true;
         } catch (Exception ex) {
             log.error("Failed to parse raw email id={} messageId={}", rawEmail.id(), rawEmail.messageId(), ex);
             jdbcTemplate.update(
@@ -395,6 +417,7 @@ public class EmailProcessingService {
                     ex.getMessage(),
                     rawEmail.id()
             );
+            return false;
         }
     }
 
