@@ -19,6 +19,13 @@ import java.util.regex.Pattern;
 public class MBankEmailParser {
 
     private static final String BALANCE_PREFIX = "mBank: Saldo rach.";
+    private static final String CARD_TOPUP_PREFIX = "mBank: Zaladowanie karty";
+
+    /** e.g. "mBank: Zaladowanie karty: 4281***3044 kwota: 30,00 PLN. Dostepne na rachunku: 83018384 39,92 PLN." */
+    private static final Pattern CARD_TOPUP_PATTERN = Pattern.compile(
+            "^mBank: Zaladowanie karty:?\\s*(?<card>\\S+)\\s+kwota:?\\s*(?<amount>-?[\\d\\s]+(?:,\\d{1,2})?)\\s+(?<currency>[A-Z]{3})\\.?\\s+"
+                    + "Dost\\S{0,2}pne na rachunku:?\\s*(?<account>\\S+)\\s+(?<left>-?[\\d\\s]*\\d(?:,\\d{1,2})?)\\s+(?<leftCurrency>[A-Z]{3})\\.?\\s*$"
+    );
 
     /**
      * e.g. "mBank: Saldo rach. 42109862 w dniu 2026-08-31. Dostępne 6491,93 PLN".
@@ -133,6 +140,22 @@ public class MBankEmailParser {
         // Balance snapshots are handled by parseAccountBalances(), not stored as spendings
         if (details.startsWith(BALANCE_PREFIX)) {
             return null;
+        }
+
+        // Prepaid card top-up: money leaves the account and lands on the card
+        if (details.startsWith(CARD_TOPUP_PREFIX)) {
+            Matcher m = CARD_TOPUP_PATTERN.matcher(details.trim());
+            if (!m.matches()) {
+                throw new IllegalArgumentException("Unrecognized mBank card top-up format: " + details);
+            }
+            String card = m.group("card");
+            return new ParsedSpending(
+                    operationId, date, time, "Zaladowanie karty",
+                    m.group("account"), card,
+                    parseAmount(m.group("amount")).negate(), m.group("currency"),
+                    "Zaladowanie karty " + card,
+                    m.group("left"), m.group("leftCurrency"), details
+            );
         }
 
         if (details.startsWith("mBank: Autoryzacja karty")) {
