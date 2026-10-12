@@ -255,7 +255,7 @@ public class ReportController {
                 LIMIT 50
                 """);
         String firstMonth = jdbcTemplate.queryForObject(
-                "SELECT TO_CHAR(MIN(operation_date), 'YYYY-MM') FROM spendings", String.class);
+                "SELECT TO_CHAR(MIN(" + OP_DATE + "), 'YYYY-MM') FROM spendings s", String.class);
         return new Hygiene(uncategorized, withoutAccount, withoutPln, unmappedAccounts, unlinkedAuth,
                 allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth);
     }
