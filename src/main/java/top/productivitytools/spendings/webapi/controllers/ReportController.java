@@ -48,7 +48,8 @@ public class ReportController {
     public record HygieneCategory(String category, int count, BigDecimal total) {}
     public record Hygiene(int uncategorized, int withoutAccount, int withoutPln, int unmappedAccounts,
                           int unlinkedAuthorizations, int allegroEmailsWithoutSpending, int emailsInError,
-                          int duplicates, List<HygieneCategory> proxyCategories, List<Map<String, Object>> uncategorizedSample) {}
+                          int duplicates, List<HygieneCategory> proxyCategories, List<Map<String, Object>> uncategorizedSample,
+                          String firstMonth) {}
 
     /** Report 1: net amount per category per month – expenses plus refunds/incomes booked in the same category. */
     @GetMapping("/category-monthly")
@@ -253,8 +254,10 @@ public class ReportController {
                 ORDER BY s.operation_date DESC, s.id DESC
                 LIMIT 50
                 """);
+        String firstMonth = jdbcTemplate.queryForObject(
+                "SELECT TO_CHAR(MIN(operation_date), 'YYYY-MM') FROM spendings", String.class);
         return new Hygiene(uncategorized, withoutAccount, withoutPln, unmappedAccounts, unlinkedAuth,
-                allegroUnlinked, emailsInError, duplicates, proxy, sample);
+                allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth);
     }
 
     private int count(String sql) {
