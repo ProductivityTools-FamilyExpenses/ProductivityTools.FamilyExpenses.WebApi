@@ -230,6 +230,7 @@ public class ReportController {
         int allegroUnlinked = count("""
                 SELECT COUNT(*) FROM allegro_raw_emails e
                 WHERE e.status = 'PROCESSED'
+                  AND NOT EXISTS (SELECT 1 FROM allegro_refunds r WHERE r.allegro_raw_email_id = e.id)
                   AND NOT EXISTS (SELECT 1 FROM spending_details sd WHERE sd.allegro_raw_email_id = e.id)
                 """);
         int emailsInError = count("""

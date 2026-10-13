@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
 import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
+import top.productivitytools.spendings.webapi.dto.ParsedAllegroRefund;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.time.LocalDate;
@@ -30,7 +31,7 @@ public class EmailProcessingService {
     private final ReentrantLock lock = new ReentrantLock();
 
     private record RawEmailRow(Long id, String messageId, String source, String rawHtml) {}
-    private record AllegroRawEmailRow(Long id, String messageId, OffsetDateTime emailDate, String rawHtml) {}
+    private record AllegroRawEmailRow(Long id, String messageId, OffsetDateTime emailDate, String subject, String rawHtml) {}
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
@@ -179,7 +180,7 @@ public class EmailProcessingService {
 
                 List<AllegroRawEmailRow> pendingAllegroEmails = jdbcTemplate.query(
                         """
-                        SELECT id, message_id, email_date, raw_html
+                        SELECT id, message_id, email_date, subject, raw_html
                         FROM allegro_raw_emails
                         WHERE status = 'NEW'
                           AND id < ?
@@ -190,6 +191,7 @@ public class EmailProcessingService {
                                 rs.getLong("id"),
                                 rs.getString("message_id"),
                                 rs.getObject("email_date", OffsetDateTime.class),
+                                rs.getString("subject"),
                                 rs.getString("raw_html")
                         ),
                         allegroUpperBound
@@ -697,31 +699,10 @@ public class EmailProcessingService {
 
     private boolean processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {
         try {
-            List<ParsedAllegroPurchase> purchases = allegroEmailParser.parseEmailBody(
-                    allegroEmail.messageId(),
-                    allegroEmail.emailDate(),
-                    allegroEmail.rawHtml()
-            );
-
-            for (ParsedAllegroPurchase purchase : purchases) {
-                jdbcTemplate.update(
-                        """
-                        INSERT INTO allegro_purchases (
-                            allegro_raw_email_id, operation_id, purchase_date, full_price,
-                            item_name, item_cost, multiple_items, item_count, item_price
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (operation_id) DO NOTHING
-                        """,
-                        allegroEmail.id(),
-                        purchase.operationId(),
-                        purchase.purchaseDate(),
-                        purchase.fullPrice(),
-                        purchase.itemName(),
-                        purchase.itemCost(),
-                        purchase.multipleItems(),
-                        purchase.itemCount(),
-                        purchase.itemPrice()
-                );
+            if (allegroEmailParser.isRefundSubject(allegroEmail.subject())) {
+                insertRefund(allegroEmail);
+            } else {
+                insertPurchases(allegroEmail);
             }
 
             jdbcTemplate.update(
@@ -745,6 +726,56 @@ public class EmailProcessingService {
                     allegroEmail.id()
             );
             return false;
+        }
+    }
+
+    private void insertRefund(AllegroRawEmailRow allegroEmail) {
+        ParsedAllegroRefund refund = allegroEmailParser.parseRefund(
+                allegroEmail.messageId(), allegroEmail.emailDate(), allegroEmail.subject(), allegroEmail.rawHtml());
+        jdbcTemplate.update(
+                """
+                INSERT INTO allegro_refunds (
+                    allegro_raw_email_id, operation_id, refund_date, amount, original_amount, partial, seller, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (operation_id) DO NOTHING
+                """,
+                allegroEmail.id(),
+                refund.operationId(),
+                refund.refundDate(),
+                refund.amount(),
+                refund.originalAmount(),
+                refund.partial(),
+                refund.seller(),
+                refund.description()
+        );
+    }
+
+    private void insertPurchases(AllegroRawEmailRow allegroEmail) {
+        List<ParsedAllegroPurchase> purchases = allegroEmailParser.parseEmailBody(
+                allegroEmail.messageId(),
+                allegroEmail.emailDate(),
+                allegroEmail.rawHtml()
+        );
+
+        for (ParsedAllegroPurchase purchase : purchases) {
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO allegro_purchases (
+                        allegro_raw_email_id, operation_id, purchase_date, full_price,
+                        item_name, item_cost, multiple_items, item_count, item_price
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (operation_id) DO NOTHING
+                    """,
+                    allegroEmail.id(),
+                    purchase.operationId(),
+                    purchase.purchaseDate(),
+                    purchase.fullPrice(),
+                    purchase.itemName(),
+                    purchase.itemCost(),
+                    purchase.multipleItems(),
+                    purchase.itemCount(),
+                    purchase.itemPrice()
+            );
         }
     }
 }

@@ -84,6 +84,36 @@ public class AllegroController {
         return ResponseEntity.ok().headers(headers).body(html == null ? new byte[0] : html.getBytes(StandardCharsets.UTF_8));
     }
 
+    public record AllegroRefundResponse(
+            Long id, Long allegroRawEmailId, String operationId, LocalDate refundDate, BigDecimal amount,
+            BigDecimal originalAmount, boolean partial, String seller, String description, String emailSubject
+    ) {}
+
+    @GetMapping("/refunds")
+    public List<AllegroRefundResponse> getRefunds() {
+        return jdbcTemplate.query(
+                """
+                SELECT r.id, r.allegro_raw_email_id, r.operation_id, r.refund_date, r.amount, r.original_amount,
+                       r.partial, r.seller, r.description, e.subject AS email_subject
+                FROM allegro_refunds r
+                JOIN allegro_raw_emails e ON e.id = r.allegro_raw_email_id
+                ORDER BY r.refund_date DESC, r.id DESC
+                """,
+                (rs, n) -> new AllegroRefundResponse(
+                        rs.getLong("id"),
+                        rs.getLong("allegro_raw_email_id"),
+                        rs.getString("operation_id"),
+                        rs.getObject("refund_date", LocalDate.class),
+                        rs.getBigDecimal("amount"),
+                        rs.getBigDecimal("original_amount"),
+                        rs.getBoolean("partial"),
+                        rs.getString("seller"),
+                        rs.getString("description"),
+                        rs.getString("email_subject")
+                )
+        );
+    }
+
     @GetMapping("/purchases")
     public List<AllegroPurchaseResponse> getPurchases() {
         return jdbcTemplate.query(
