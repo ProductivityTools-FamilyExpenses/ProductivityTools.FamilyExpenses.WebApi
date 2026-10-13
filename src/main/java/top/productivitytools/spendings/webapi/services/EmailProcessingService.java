@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service;
 import top.productivitytools.spendings.webapi.dto.ParsedAccountBalance;
 import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
-import top.productivitytools.spendings.webapi.dto.ParsedAllegroRefund;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
 import java.time.LocalDate;
@@ -699,11 +698,7 @@ public class EmailProcessingService {
 
     private boolean processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {
         try {
-            if (allegroEmailParser.isRefundSubject(allegroEmail.subject())) {
-                insertRefund(allegroEmail);
-            } else {
-                insertPurchases(allegroEmail);
-            }
+            insertPurchases(allegroEmail);
 
             jdbcTemplate.update(
                     """
@@ -727,27 +722,6 @@ public class EmailProcessingService {
             );
             return false;
         }
-    }
-
-    private void insertRefund(AllegroRawEmailRow allegroEmail) {
-        ParsedAllegroRefund refund = allegroEmailParser.parseRefund(
-                allegroEmail.messageId(), allegroEmail.emailDate(), allegroEmail.subject(), allegroEmail.rawHtml());
-        jdbcTemplate.update(
-                """
-                INSERT INTO allegro_refunds (
-                    allegro_raw_email_id, operation_id, refund_date, amount, original_amount, partial, seller, description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (operation_id) DO NOTHING
-                """,
-                allegroEmail.id(),
-                refund.operationId(),
-                refund.refundDate(),
-                refund.amount(),
-                refund.originalAmount(),
-                refund.partial(),
-                refund.seller(),
-                refund.description()
-        );
     }
 
     private void insertPurchases(AllegroRawEmailRow allegroEmail) {
