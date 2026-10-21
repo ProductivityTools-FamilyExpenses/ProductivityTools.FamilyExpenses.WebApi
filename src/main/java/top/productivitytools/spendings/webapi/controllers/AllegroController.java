@@ -84,22 +84,31 @@ public class AllegroController {
         return ResponseEntity.ok().headers(headers).body(html == null ? new byte[0] : html.getBytes(StandardCharsets.UTF_8));
     }
 
+    private static final String PURCHASES_SELECT = """
+            SELECT p.id, p.allegro_raw_email_id, p.operation_id, p.purchase_date, p.full_price,
+                   p.item_name, p.item_cost, p.multiple_items, p.item_count, p.item_price, p.created_at,
+                   e.subject AS email_subject,
+                   s.id AS spending_id, s.operation_date AS spending_date, s.amount AS spending_amount,
+                   s.name AS spending_name, sd.category AS spending_category
+            FROM allegro_purchases p
+            JOIN allegro_raw_emails e ON e.id = p.allegro_raw_email_id
+            LEFT JOIN spending_details sd ON sd.allegro_raw_email_id = e.id
+            LEFT JOIN spendings s ON s.id = sd.spending_id
+            """;
+
     @GetMapping("/purchases")
     public List<AllegroPurchaseResponse> getPurchases() {
-        return jdbcTemplate.query(
-                """
-                SELECT p.id, p.allegro_raw_email_id, p.operation_id, p.purchase_date, p.full_price,
-                       p.item_name, p.item_cost, p.multiple_items, p.item_count, p.item_price, p.created_at,
-                       e.subject AS email_subject,
-                       s.id AS spending_id, s.operation_date AS spending_date, s.amount AS spending_amount,
-                       s.name AS spending_name, sd.category AS spending_category
-                FROM allegro_purchases p
-                JOIN allegro_raw_emails e ON e.id = p.allegro_raw_email_id
-                LEFT JOIN spending_details sd ON sd.allegro_raw_email_id = e.id
-                LEFT JOIN spendings s ON s.id = sd.spending_id
-                ORDER BY p.purchase_date DESC, p.id DESC
-                """,
-                (rs, n) -> new AllegroPurchaseResponse(
+        return jdbcTemplate.query(PURCHASES_SELECT + " ORDER BY p.purchase_date DESC, p.id DESC", this::mapPurchase);
+    }
+
+    /** Items of one order (= one Allegro e-mail); used by the transactions page popup. */
+    @GetMapping("/emails/{id}/purchases")
+    public List<AllegroPurchaseResponse> getPurchasesForEmail(@PathVariable long id) {
+        return jdbcTemplate.query(PURCHASES_SELECT + " WHERE p.allegro_raw_email_id = ? ORDER BY p.id ASC", this::mapPurchase, id);
+    }
+
+    private AllegroPurchaseResponse mapPurchase(java.sql.ResultSet rs, int n) throws java.sql.SQLException {
+        return new AllegroPurchaseResponse(
                         rs.getLong("id"),
                         rs.getLong("allegro_raw_email_id"),
                         rs.getString("operation_id"),
@@ -117,7 +126,6 @@ public class AllegroController {
                         rs.getBigDecimal("spending_amount"),
                         rs.getString("spending_name"),
                         rs.getString("spending_category")
-                )
         );
     }
 }
