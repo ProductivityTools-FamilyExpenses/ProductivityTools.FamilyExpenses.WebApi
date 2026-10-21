@@ -13,11 +13,16 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class AllegroEmailParser {
 
     private static final ZoneId WARSAW_ZONE = ZoneId.of("Europe/Warsaw");
+    /** "1 234,56 zł" optionally followed by the quantity breakdown ("2 × 24,99 zł"); group 1 = amount, group 2 = rest. */
+    private static final Pattern PRICE_CELL = Pattern.compile(
+            "^(\\d{1,3}(?:[\\s\\u00a0]?\\d{3})*(?:[.,]\\d{2})?)\\s*zł(.*)$", Pattern.DOTALL);
 
     public List<ParsedAllegroPurchase> parseEmailBody(String messageId, OffsetDateTime emailDate, String rawHtml) {
         Document doc = Jsoup.parse(rawHtml);
@@ -45,12 +50,13 @@ public class AllegroEmailParser {
                     continue;
                 }
 
-                int indexOfZl = text.indexOf("zł");
-                if (indexOfZl > -1) {
-                    String costStr = text.substring(0, indexOfZl).trim();
-                    BigDecimal purchaseCost = parsePrice(costStr);
+                // A price cell STARTS with an amount ("25,70 zł" or "49,98 zł 2 × 24,99 zł"); searching for "zł"
+                // anywhere would also hit item names such as "Dobra pamięć, zła pamięć".
+                Matcher price = PRICE_CELL.matcher(text);
+                if (price.matches()) {
+                    BigDecimal purchaseCost = parsePrice(price.group(1));
 
-                    String multipleItems = text.substring(indexOfZl)
+                    String multipleItems = price.group(2)
                             .replace("\n", "")
                             .replace("\r", "")
                             .replace("zł", "")
