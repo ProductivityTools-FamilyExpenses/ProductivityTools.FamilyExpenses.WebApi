@@ -535,7 +535,10 @@ public class EmailProcessingService {
                 FROM spendings s
                 JOIN spending_details sd ON sd.spending_id = s.id
                 WHERE sd.allegro_raw_email_id IS NULL
-                  AND s.name IN ('Allegro /Poznan', 'ALLEGRO.PL', 'ALLEGRO.PL &', 'WWW.ALLEGRO.PL')
+                  AND (
+                        s.name ILIKE '%allegro%'            -- 'Allegro /Poznan', 'ALLEGRO.PL', 'WWW.ALLEGRO.PL', ...
+                     OR s.name ILIKE 'PayPro SA *A%'        -- Przelewy24 (PayPro S.A.) card payments for Allegro
+                  )
                 ORDER BY s.id ASC
                 """,
                 Long.class
