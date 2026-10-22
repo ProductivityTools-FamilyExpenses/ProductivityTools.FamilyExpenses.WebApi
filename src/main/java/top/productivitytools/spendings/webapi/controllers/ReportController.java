@@ -39,17 +39,20 @@ public class ReportController {
               AND COALESCE(s.name, '') NOT LIKE '%.NAT.TR.FX'
             """;
 
-    public record CategoryMonth(String month, String category, BigDecimal total, int count) {}
+    /** {@code group} is the category's group name from the dictionary, null when the category is ungrouped. */
+    public record CategoryMonth(String month, String category, BigDecimal total, int count, String group) {}
     public record CashflowMonth(String month, String account, BigDecimal income, BigDecimal expenses, BigDecimal net, int count) {}
     public record RecurringPayment(String payee, String dstAccount, String category, int occurrences, int months,
                                    LocalDate firstDate, LocalDate lastDate, BigDecimal lastAmount,
                                    BigDecimal avgAmount, BigDecimal minAmount, BigDecimal maxAmount,
                                    BigDecimal monthlyAvg12m, boolean active) {}
     public record HygieneCategory(String category, int count, BigDecimal total) {}
+    /** Category group definition (for rendering group chips on the reports page). */
+    public record CategoryGroupInfo(Long id, String name, String color, int sortOrder) {}
     public record Hygiene(int uncategorized, int withoutAccount, int withoutPln, int unmappedAccounts,
                           int unlinkedAuthorizations, int allegroEmailsWithoutSpending, int emailsInError,
                           int duplicates, List<HygieneCategory> proxyCategories, List<Map<String, Object>> uncategorizedSample,
-                          String firstMonth) {}
+                          String firstMonth, List<CategoryGroupInfo> groups) {}
 
     /** Report 1: net amount per category per month – expenses plus refunds/incomes booked in the same category. */
     @GetMapping("/category-monthly")
@@ -61,26 +64,29 @@ public class ReportController {
                 SELECT TO_CHAR(d.op_date, 'YYYY-MM') AS month,
                        COALESCE(NULLIF(d.category, ''), '(bez kategorii)') AS category,
                        SUM(d.amount_pln) AS total,
-                       COUNT(*) AS cnt
+                       COUNT(*) AS cnt,
+                       d.group_name
                 FROM (
-                    SELECT {OP_DATE} AS op_date, sd.category, s.amount_pln
+                    SELECT {OP_DATE} AS op_date, sd.category, s.amount_pln, g.name AS group_name
                     FROM spendings s
                     JOIN spending_details sd ON sd.spending_id = s.id
+                    LEFT JOIN dictionary_category dc ON dc.name = sd.category
+                    LEFT JOIN dictionary_category_group g ON g.id = dc.group_id
                     WHERE 1 = 1
                 {BASE_FILTER}
                 ) d
                 WHERE d.op_date BETWEEN ? AND ?
-                GROUP BY 1, 2
+                GROUP BY 1, 2, d.group_name
                 ORDER BY 1, 2
                 """.replace("{OP_DATE}", OP_DATE).replace("{BASE_FILTER}", BASE_FILTER),
                 (rs, n) -> new CategoryMonth(rs.getString("month"), rs.getString("category"),
-                        rs.getBigDecimal("total"), rs.getInt("cnt")),
+                        rs.getBigDecimal("total"), rs.getInt("cnt"), rs.getString("group_name")),
                 fromDate, toDate);
     }
 
     public record CategoryDetail(Long id, String operationDate, String operationTime, String operationType,
                                  String name, BigDecimal amount, String currency, BigDecimal amountPln,
-                                 String account, String category, String note) {}
+                                 String account, String category, String note, String group) {}
 
     /**
      * Drill-down for the pivot: the spendings behind a (category, month) cell. Same filters as the pivot.
@@ -99,10 +105,13 @@ public class ReportController {
                 FROM (
                     SELECT s.id, s.operation_date, s.operation_time, s.operation_type, s.name,
                            s.amount, s.currency, s.amount_pln, da.name AS account, sd.category, sd.note,
+                           g.name AS group_name,
                            {OP_DATE} AS op_date
                     FROM spendings s
                     JOIN spending_details sd ON sd.spending_id = s.id
                     LEFT JOIN dictionary_account da ON da.id = sd.account_id
+                    LEFT JOIN dictionary_category dc ON dc.name = sd.category
+                    LEFT JOIN dictionary_category_group g ON g.id = dc.group_id
                     WHERE 1 = 1
                 {BASE_FILTER}
                 ) d
@@ -112,7 +121,8 @@ public class ReportController {
                 """.replace("{OP_DATE}", OP_DATE).replace("{BASE_FILTER}", BASE_FILTER),
                 (rs, n) -> new CategoryDetail(rs.getLong("id"), rs.getString("operation_date"), rs.getString("operation_time"),
                         rs.getString("operation_type"), rs.getString("name"), rs.getBigDecimal("amount"), rs.getString("currency"),
-                        rs.getBigDecimal("amount_pln"), rs.getString("account"), rs.getString("category"), rs.getString("note")),
+                        rs.getBigDecimal("amount_pln"), rs.getString("account"), rs.getString("category"), rs.getString("note"),
+                        rs.getString("group_name")),
                 fromDate, toDate, all, uncategorised, category == null ? "" : category);
     }
 
@@ -256,8 +266,12 @@ public class ReportController {
                 """);
         String firstMonth = jdbcTemplate.queryForObject(
                 "SELECT TO_CHAR(MIN(" + OP_DATE + "), 'YYYY-MM') FROM spendings s", String.class);
+        List<CategoryGroupInfo> groups = jdbcTemplate.query(
+                "SELECT id, name, color, sort_order FROM dictionary_category_group ORDER BY sort_order, name",
+                (rs, n) -> new CategoryGroupInfo(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
+                        rs.getInt("sort_order")));
         return new Hygiene(uncategorized, withoutAccount, withoutPln, unmappedAccounts, unlinkedAuth,
-                allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth);
+                allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth, groups);
     }
 
     private int count(String sql) {
