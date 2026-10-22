@@ -37,6 +37,12 @@ public record SpendingResponse(
         Long allegroRawEmailId,
         /** id of the canonical spending this row duplicates (e.g. debit mirroring a transfer); null = count it */
         Long duplicateOf,
-        OffsetDateTime detailsUpdatedAt
+        OffsetDateTime detailsUpdatedAt,
+        /** the user flagged this expense as awaiting a refund ("Do zwrotu"); false when no details row */
+        boolean refundExpected,
+        /** for an expense: id of the linked refund (incoming) spending; null until linked */
+        Long refundSpendingId,
+        /** for a refund row: id of the expense it refunds; null when this row is not linked as a refund */
+        Long refundOfSpendingId
 ) {
 }

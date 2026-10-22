@@ -46,7 +46,10 @@ public class SpendingController {
                    sd.note,
                    sd.allegro_raw_email_id,
                    sd.duplicate_of,
-                   sd.updated_at AS details_updated_at
+                   sd.updated_at AS details_updated_at,
+                   COALESCE(sd.refund_expected, FALSE) AS refund_expected,
+                   sd.refund_spending_id,
+                   (SELECT x.spending_id FROM spending_details x WHERE x.refund_spending_id = s.id LIMIT 1) AS refund_of_spending_id
             FROM spendings s
             LEFT JOIN spending_details sd ON sd.spending_id = s.id
             LEFT JOIN dictionary_account da ON da.id = sd.account_id
@@ -145,7 +148,10 @@ public class SpendingController {
                 rs.getString("note"),
                 rs.getObject("allegro_raw_email_id", Long.class),
                 rs.getObject("duplicate_of", Long.class),
-                rs.getObject("details_updated_at", OffsetDateTime.class)
+                rs.getObject("details_updated_at", OffsetDateTime.class),
+                rs.getBoolean("refund_expected"),
+                rs.getObject("refund_spending_id", Long.class),
+                rs.getObject("refund_of_spending_id", Long.class)
         );
     }
 }
