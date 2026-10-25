@@ -13,9 +13,11 @@ import top.productivitytools.spendings.webapi.dto.ParsedCardAuthorization;
 import top.productivitytools.spendings.webapi.dto.ParsedAllegroPurchase;
 import top.productivitytools.spendings.webapi.dto.ParsedSpending;
 
+import java.sql.Date;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Service
@@ -561,7 +563,7 @@ public class EmailProcessingService {
                                    (re.email_date AT TIME ZONE 'Europe/Warsaw')::date
                                ))) AS date_diff
                         FROM spendings s
-                        JOIN mbank_raw_emails re ON re.id = s.raw_email_id
+                        LEFT JOIN mbank_raw_emails re ON re.id = s.raw_email_id
                         JOIN allegro_purchases ap ON ap.full_price = (-1 * s.amount)
                         WHERE s.id = ?
                           AND NOT EXISTS (
@@ -597,6 +599,10 @@ public class EmailProcessingService {
             );
 
             for (ParsedSpending spending : spendings) {
+                if (tryLinkEmailSpendingToExistingStatementSpending(rawEmail.id(), spending)) {
+                    continue;
+                }
+
                 jdbcTemplate.update(
                         """
                         INSERT INTO spendings (
@@ -620,6 +626,8 @@ public class EmailProcessingService {
                         spending.amountLeftCurrency(),
                         spending.details()
                 );
+
+                tryLinkNewlyInsertedEmailSpendingToUnreconciledStatement(spending);
             }
 
             List<ParsedCardAuthorization> authorizations = mBankEmailParser.parseCardAuthorizations(
@@ -697,6 +705,128 @@ public class EmailProcessingService {
             );
             return false;
         }
+    }
+
+    private boolean tryLinkEmailSpendingToExistingStatementSpending(Long rawEmailId, ParsedSpending spending) {
+        if (spending.amount() == null || spending.operationDate() == null) {
+            return false;
+        }
+        try {
+            LocalDate emailOpDate = parseOperationDateFlexible(spending.operationDate());
+            if (emailOpDate == null) {
+                return false;
+            }
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    """
+                    SELECT s.id AS spending_id, mso.id AS stmt_id
+                    FROM mbank_statement_operations mso
+                    JOIN spendings s ON s.id = mso.spending_id
+                    WHERE s.raw_email_id IS NULL
+                      AND mso.amount = ?
+                      AND mso.operation_date BETWEEN ? AND ?
+                      AND (? IS NULL OR s.src_account IS NULL OR s.src_account = ?)
+                    ORDER BY ABS(mso.operation_date - ?), mso.id
+                    LIMIT 1
+                    """,
+                    spending.amount(),
+                    Date.valueOf(emailOpDate.minusDays(2)),
+                    Date.valueOf(emailOpDate.plusDays(2)),
+                    spending.srcAccount(),
+                    spending.srcAccount(),
+                    Date.valueOf(emailOpDate)
+            );
+            if (rows.isEmpty()) {
+                return false;
+            }
+            Long spendingId = ((Number) rows.get(0).get("spending_id")).longValue();
+            jdbcTemplate.update(
+                    "UPDATE spendings SET raw_email_id = ? WHERE id = ? AND raw_email_id IS NULL",
+                    rawEmailId,
+                    spendingId
+            );
+            return true;
+        } catch (Exception e) {
+            log.debug("Could not link email spending to existing statement spending: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private void tryLinkNewlyInsertedEmailSpendingToUnreconciledStatement(ParsedSpending spending) {
+        if (spending == null || spending.operationId() == null || spending.amount() == null || spending.operationDate() == null) {
+            return;
+        }
+        try {
+            List<Long> ids = jdbcTemplate.queryForList(
+                    "SELECT id FROM spendings WHERE operation_id = ?",
+                    Long.class,
+                    spending.operationId()
+            );
+            if (ids.isEmpty() || ids.get(0) == null) {
+                return;
+            }
+            Long spendingId = ids.get(0);
+            LocalDate emailOpDate = parseOperationDateFlexible(spending.operationDate());
+            if (emailOpDate == null) {
+                return;
+            }
+            List<Long> stmtIds = jdbcTemplate.queryForList(
+                    """
+                    SELECT mso.id
+                    FROM mbank_statement_operations mso
+                    WHERE mso.spending_id IS NULL
+                      AND mso.reconciliation_status IN ('UNRECONCILED', 'CANDIDATE_DATE_SHIFT')
+                      AND mso.amount = ?
+                      AND mso.operation_date BETWEEN ? AND ?
+                      AND (? IS NULL OR mso.src_account_short IS NULL OR mso.src_account_short = ?)
+                    ORDER BY ABS(mso.operation_date - ?), mso.id
+                    LIMIT 1
+                    """,
+                    Long.class,
+                    spending.amount(),
+                    Date.valueOf(emailOpDate.minusDays(1)),
+                    Date.valueOf(emailOpDate.plusDays(1)),
+                    spending.srcAccount(),
+                    spending.srcAccount(),
+                    Date.valueOf(emailOpDate)
+            );
+            if (!stmtIds.isEmpty()) {
+                Long stmtId = stmtIds.get(0);
+                jdbcTemplate.update(
+                        """
+                        UPDATE mbank_statement_operations
+                        SET spending_id = ?,
+                            reconciliation_status = 'MATCHED_EMAIL',
+                            reconciliation_note = 'Auto-linked when raw email arrived',
+                            updated_at = NOW()
+                        WHERE id = ? AND spending_id IS NULL
+                        """,
+                        spendingId,
+                        stmtId
+                );
+            }
+        } catch (Exception e) {
+            log.debug("Could not auto-link newly inserted email spending to statement operation: {}", e.getMessage());
+        }
+    }
+
+    private LocalDate parseOperationDateFlexible(String rawDate) {
+        if (rawDate == null || rawDate.isBlank()) {
+            return null;
+        }
+        String trimmed = rawDate.trim();
+        try {
+            if (trimmed.matches("^\\d{4}-\\d{2}-\\d{2}$")) {
+                return LocalDate.parse(trimmed);
+            }
+            if (trimmed.matches("^\\d{2}\\.\\d{2}\\.\\d{4}$")) {
+                return LocalDate.parse(trimmed, java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"));
+            }
+            if (trimmed.matches("^\\d{2}-\\d{2}-\\d{4}$")) {
+                return LocalDate.parse(trimmed, java.time.format.DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private boolean processSingleAllegroEmail(AllegroRawEmailRow allegroEmail) {

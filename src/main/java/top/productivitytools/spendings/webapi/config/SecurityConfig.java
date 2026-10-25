@@ -50,6 +50,8 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        .requestMatchers("/error").permitAll()
+                        .requestMatchers("/api/mbank-statements/**").permitAll()
                         // Manual triggers from the WebApp – require a signed-in user
                         .requestMatchers(HttpMethod.POST, "/api/emails/process", "/api/spendings/fill-*", "/api/spendings/mark-duplicates", "/api/card-authorizations/link", "/api/dictionary/**", "/api/spendings/annotations/**").authenticated()
                         // Data ingestion from Google Apps Script – intentionally unauthenticated for now
