@@ -29,7 +29,9 @@ public class EmailProcessingService {
     private final MBankEmailParser mBankEmailParser;
     private final AllegroEmailParser allegroEmailParser;
     private final NbpExchangeRateService nbpExchangeRateService;
+    private final AccountCategoryRuleService accountCategoryRuleService;
     private final ReentrantLock lock = new ReentrantLock();
+
 
     private record RawEmailRow(Long id, String messageId, String source, String rawHtml) {}
     private record AllegroRawEmailRow(Long id, String messageId, OffsetDateTime emailDate, String subject, String rawHtml) {}
@@ -498,24 +500,14 @@ public class EmailProcessingService {
     }
 
     /**
-     * Uzupełnia kategorię dla wierszy bez kategorii: najpierw na podstawie konta
-     * (odpowiednik SetAccountAsCategory.js: Wypłaty -> ProxyWypłaty), potem z dictionary_category_mapping
-     * po nazwie operacji (odpowiednik SetCategories.js). Zwraca liczbę uzupełnionych wierszy.
+     * Uzupełnia kategorię: najpierw reguły rachunków (account_category_rules, zarządzane na stronie
+     * „Reguły rachunków”), potem z dictionary_category_mapping po nazwie operacji (odpowiednik SetCategories.js)
+     * dla wierszy bez kategorii. Zwraca liczbę uzupełnionych wierszy.
      */
     public int fillCategories() {
         ensureSpendingDetailsRows();
-        int updated = jdbcTemplate.update(
-                """
-                UPDATE spending_details sd
-                SET category = dc.name,
-                    updated_at = NOW()
-                FROM dictionary_category dc, dictionary_account da
-                WHERE (sd.category IS NULL OR sd.category = '')
-                  AND da.id = sd.account_id
-                  AND da.name = 'Wypłaty'
-                  AND dc.name = 'ProxyWypłaty'
-                """
-        );
+        // Account rules (account_category_rules, e.g. own accounts -> PrzelewWlasny) are applied first
+        int updated = accountCategoryRuleService.applyAll();
         updated += jdbcTemplate.update(
                 """
                 UPDATE spending_details sd
