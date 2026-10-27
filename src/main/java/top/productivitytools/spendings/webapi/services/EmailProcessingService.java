@@ -716,7 +716,10 @@ public class EmailProcessingService {
                     WHERE s.raw_email_id IS NULL
                       AND mso.amount = ?
                       AND mso.operation_date BETWEEN ? AND ?
-                      AND (? IS NULL OR s.src_account IS NULL OR s.src_account = ?)
+                      -- own account is the e-mail's source (outgoing) or destination (incoming transfer)
+                      AND (s.src_account IS NULL
+                           OR (CAST(? AS TEXT) IS NULL AND CAST(? AS TEXT) IS NULL)
+                           OR LTRIM(s.src_account, '0') IN (LTRIM(COALESCE(?, ''), '0'), LTRIM(COALESCE(?, ''), '0')))
                     ORDER BY ABS(mso.operation_date - ?), mso.id
                     LIMIT 1
                     """,
@@ -724,7 +727,9 @@ public class EmailProcessingService {
                     Date.valueOf(emailOpDate.minusDays(2)),
                     Date.valueOf(emailOpDate.plusDays(2)),
                     spending.srcAccount(),
+                    spending.dstAccount(),
                     spending.srcAccount(),
+                    spending.dstAccount(),
                     Date.valueOf(emailOpDate)
             );
             if (rows.isEmpty()) {
@@ -769,7 +774,10 @@ public class EmailProcessingService {
                       AND mso.reconciliation_status IN ('UNRECONCILED', 'CANDIDATE_DATE_SHIFT')
                       AND mso.amount = ?
                       AND mso.operation_date BETWEEN ? AND ?
-                      AND (? IS NULL OR mso.src_account_short IS NULL OR mso.src_account_short = ?)
+                      -- own account is the e-mail's source (outgoing) or destination (incoming transfer)
+                      AND (mso.src_account_short IS NULL
+                           OR (CAST(? AS TEXT) IS NULL AND CAST(? AS TEXT) IS NULL)
+                           OR LTRIM(mso.src_account_short, '0') IN (LTRIM(COALESCE(?, ''), '0'), LTRIM(COALESCE(?, ''), '0')))
                     ORDER BY ABS(mso.operation_date - ?), mso.id
                     LIMIT 1
                     """,
@@ -778,7 +786,9 @@ public class EmailProcessingService {
                     Date.valueOf(emailOpDate.minusDays(1)),
                     Date.valueOf(emailOpDate.plusDays(1)),
                     spending.srcAccount(),
+                    spending.dstAccount(),
                     spending.srcAccount(),
+                    spending.dstAccount(),
                     Date.valueOf(emailOpDate)
             );
             if (!stmtIds.isEmpty()) {
@@ -787,9 +797,10 @@ public class EmailProcessingService {
                         """
                         UPDATE mbank_statement_operations
                         SET spending_id = ?,
+                            candidate_spending_id = NULL,
                             reconciliation_status = 'MATCHED_EMAIL',
-                            reconciliation_note = 'Auto-linked when raw email arrived',
-                            updated_at = NOW()
+                            match_type = 'EMAIL_ARRIVED',
+                            reconciled_at = NOW()
                         WHERE id = ? AND spending_id IS NULL
                         """,
                         spendingId,

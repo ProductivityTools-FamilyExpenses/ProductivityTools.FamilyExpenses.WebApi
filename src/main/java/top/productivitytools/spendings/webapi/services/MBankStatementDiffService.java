@@ -350,7 +350,7 @@ public class MBankStatementDiffService {
                 if (!Objects.equals(stmtOp.operationDate(), db.effectiveDate())) {
                     continue;
                 }
-                if (!accountsCompatible(stmtOp.srcAccountShort(), db.srcAccount())) {
+                if (!accountsCompatible(stmtOp.srcAccountShort(), db)) {
                     continue;
                 }
                 int score = scoreStoredPair(stmtOp, db, 0);
@@ -409,7 +409,7 @@ public class MBankStatementDiffService {
                 if (diffDays == 0 || diffDays > 3) {
                     continue;
                 }
-                if (!accountsCompatible(stmtOp.srcAccountShort(), db.srcAccount())) {
+                if (!accountsCompatible(stmtOp.srcAccountShort(), db)) {
                     continue;
                 }
                 int score = scoreStoredPair(stmtOp, db, diffDays);
@@ -1098,7 +1098,7 @@ public class MBankStatementDiffService {
                 if (!Objects.equals(opDate, db.effectiveDate())) {
                     continue;
                 }
-                if (!accountsCompatible(stmtOp.accountShort8(), db.srcAccount())) {
+                if (!accountsCompatible(stmtOp.accountShort8(), db)) {
                     continue;
                 }
                 int score = scorePair(stmtOp, db, 0);
@@ -1143,7 +1143,7 @@ public class MBankStatementDiffService {
                 if (diffDays == 0 || diffDays > 3) {
                     continue;
                 }
-                if (!accountsCompatible(stmtOp.accountShort8(), db.srcAccount())) {
+                if (!accountsCompatible(stmtOp.accountShort8(), db)) {
                     continue;
                 }
                 int score = scorePair(stmtOp, db, diffDays);
@@ -1246,18 +1246,37 @@ public class MBankStatementDiffService {
         return norm1.equals(norm2);
     }
 
-    private boolean accountsCompatible(String stmtSrcShort, String dbSrc) {
-        if (stmtSrcShort == null || stmtSrcShort.isBlank() || dbSrc == null || dbSrc.isBlank()) {
+    /**
+     * The statement row's own account must be one of the e-mail transaction's accounts. For outgoing operations
+     * it is the e-mail's source account, for incoming transfers ("Przelew przych. z rach. 3212...392744 na rach.
+     * 42109862") it is the destination account, so both sides are checked. Unknown accounts are compatible.
+     */
+    private boolean accountsCompatible(String stmtOwnShort, DbSpendingCandidate db) {
+        if (stmtOwnShort == null || stmtOwnShort.isBlank()) {
             return true;
         }
-        return stmtSrcShort.trim().equals(dbSrc.trim());
+        boolean dbHasSrc = db.srcAccount() != null && !db.srcAccount().isBlank();
+        boolean dbHasDst = db.dstAccount() != null && !db.dstAccount().isBlank();
+        if (!dbHasSrc && !dbHasDst) {
+            return true;
+        }
+        return sameAccount(stmtOwnShort, db.srcAccount()) || sameAccount(stmtOwnShort, db.dstAccount());
+    }
+
+    /** Compares account numbers by digits, ignoring leading zeros ("00561357" == "561357"). */
+    private static boolean sameAccount(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        String da = a.replaceAll("\\D", "").replaceFirst("^0+", "");
+        String db = b.replaceAll("\\D", "").replaceFirst("^0+", "");
+        return !da.isEmpty() && da.equals(db);
     }
 
     private int scoreStoredPair(StoredStatementOpRow stmt, DbSpendingCandidate db, long dateDiffDays) {
         int score = 100 - (int) (dateDiffDays * 20);
 
-        if (stmt.srcAccountShort() != null && db.srcAccount() != null
-                && stmt.srcAccountShort().equals(db.srcAccount())) {
+        if (sameAccount(stmt.srcAccountShort(), db.srcAccount()) || sameAccount(stmt.srcAccountShort(), db.dstAccount())) {
             score += 30;
         }
 
@@ -1273,8 +1292,7 @@ public class MBankStatementDiffService {
     private int scorePair(StatementOperation stmt, DbSpendingCandidate db, long dateDiffDays) {
         int score = 100 - (int) (dateDiffDays * 20);
 
-        if (stmt.accountShort8() != null && db.srcAccount() != null
-                && stmt.accountShort8().equals(db.srcAccount())) {
+        if (sameAccount(stmt.accountShort8(), db.srcAccount()) || sameAccount(stmt.accountShort8(), db.dstAccount())) {
             score += 30;
         }
 
