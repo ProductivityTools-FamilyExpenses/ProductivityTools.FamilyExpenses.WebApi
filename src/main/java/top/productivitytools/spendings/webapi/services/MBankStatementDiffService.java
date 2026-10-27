@@ -318,8 +318,9 @@ public class MBankStatementDiffService {
             return;
         }
 
-        LocalDate dbQueryFrom = fromDate.minusDays(4);
-        LocalDate dbQueryTo = toDate.plusDays(4);
+        // Wide enough for pass 3 (title-confirmed matches up to LONG_SHIFT_MAX_DAYS apart)
+        LocalDate dbQueryFrom = fromDate.minusDays(LONG_SHIFT_MAX_DAYS + 1);
+        LocalDate dbQueryTo = toDate.plusDays(LONG_SHIFT_MAX_DAYS + 1);
         List<DbSpendingCandidate> allDbCandidates = fetchDbCandidates(dbQueryFrom, dbQueryTo);
 
         // Exclude DB spendings that are already linked to any mbank_statement_operations row
@@ -461,6 +462,88 @@ public class MBankStatementDiffService {
                 );
             }
         }
+
+        // Pass 3: same amount + compatible account + matching title, 4..LONG_SHIFT_MAX_DAYS days apart
+        // -> CANDIDATE_DATE_SHIFT for user review. Typical case: card refunds ("ZWROT ZAKUPU"), which the statement
+        // dates with the original purchase date while the e-mail carries the (much later) booking date.
+        List<PotentialStoredMatch> pass3 = new ArrayList<>();
+        for (StoredStatementOpRow stmtOp : pendingOps) {
+            if (matchedStmtIds.contains(stmtOp.id())) {
+                continue;
+            }
+            for (DbSpendingCandidate db : availableDb) {
+                if (matchedDbIds.contains(db.id())
+                        || !amountsEqual(stmtOp.amount(), db.amount())
+                        || !currenciesCompatible(stmtOp.currency(), db.currency())
+                        || stmtOp.operationDate() == null || db.effectiveDate() == null
+                        || !accountsCompatible(stmtOp.srcAccountShort(), db)
+                        || !titlesMatch(stmtOp.title(), stmtOp.rawDescription(), db.title())) {
+                    continue;
+                }
+                long diffDays = Math.abs(ChronoUnit.DAYS.between(stmtOp.operationDate(), db.effectiveDate()));
+                if (diffDays <= 3 || diffDays > LONG_SHIFT_MAX_DAYS) {
+                    continue;
+                }
+                // closer dates first: score decreases by 1 per day on top of the usual pair score (without day penalty)
+                int score = scoreStoredPair(stmtOp, db, 0) - (int) diffDays;
+                pass3.add(new PotentialStoredMatch(stmtOp.id(), db.id(), "DATE_SHIFT_LONG", (int) diffDays, score));
+            }
+        }
+        pass3.sort(Comparator.comparingInt(PotentialStoredMatch::score).reversed());
+
+        for (PotentialStoredMatch m : pass3) {
+            if (matchedStmtIds.contains(m.stmtId()) || matchedDbIds.contains(m.dbId())) {
+                continue;
+            }
+            matchedStmtIds.add(m.stmtId());
+            matchedDbIds.add(m.dbId());
+            jdbcTemplate.update(
+                    """
+                    UPDATE mbank_statement_operations
+                    SET reconciliation_status = 'CANDIDATE_DATE_SHIFT',
+                        match_type = 'DATE_SHIFT_LONG',
+                        date_diff_days = ?,
+                        match_score = ?,
+                        candidate_spending_id = ?
+                    WHERE id = ?
+                    """,
+                    m.dateDiffDays(),
+                    m.score(),
+                    m.dbId(),
+                    m.stmtId()
+            );
+        }
+    }
+
+    /** Maximum date difference (days) for title-confirmed candidates (pass 3), e.g. card refunds. */
+    private static final int LONG_SHIFT_MAX_DAYS = 31;
+
+    /**
+     * True when the e-mail title clearly refers to the same counterparty as the statement row. E-mail titles are
+     * often truncated by mBank ("Deporvillage...", "JMP S.A. BIE..."), so the part before "..." (and, for transfers,
+     * the part before ";") must be at least 4 characters and be a prefix of the statement title or description.
+     */
+    private boolean titlesMatch(String stmtTitle, String stmtRawDesc, String dbTitle) {
+        if (dbTitle == null || dbTitle.isBlank()) {
+            return false;
+        }
+        String head = dbTitle;
+        int dots = head.indexOf("...");
+        if (dots >= 0) {
+            head = head.substring(0, dots);
+        }
+        int semicolon = head.indexOf(';');
+        if (semicolon >= 0) {
+            head = head.substring(0, semicolon);
+        }
+        String normHead = normalizeForComparison(head);
+        if (normHead.length() < 4) {
+            return false;
+        }
+        String normTitle = normalizeForComparison(stmtTitle);
+        String normRaw = normalizeForComparison(stmtRawDesc);
+        return normTitle.startsWith(normHead) || normRaw.startsWith(normHead)
+                || (!normTitle.isEmpty() && normHead.startsWith(normTitle) && normTitle.length() >= 4);
     }
 
     /**
@@ -679,6 +762,43 @@ public class MBankStatementDiffService {
         if (rows == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Operacja z wyciągu #" + statementOperationId + " nie istnieje");
         }
+    }
+
+    /**
+     * Confirms several CANDIDATE_DATE_SHIFT suggestions at once: each statement operation is linked to its
+     * candidate_spending_id. Operations that are no longer candidates, or whose candidate spending is already
+     * linked to another operation, are skipped. Returns the number of linked operations.
+     */
+    @Transactional
+    public int linkCandidates(List<Long> statementOperationIds) {
+        if (statementOperationIds == null || statementOperationIds.isEmpty()) {
+            return 0;
+        }
+        int linked = 0;
+        for (Long id : statementOperationIds) {
+            if (id == null) {
+                continue;
+            }
+            linked += jdbcTemplate.update(
+                    """
+                    UPDATE mbank_statement_operations mso
+                    SET spending_id = mso.candidate_spending_id,
+                        candidate_spending_id = NULL,
+                        reconciliation_status = 'MATCHED_EMAIL',
+                        match_type = 'MANUAL_LINK',
+                        reconciled_at = NOW()
+                    WHERE mso.id = ?
+                      AND mso.reconciliation_status = 'CANDIDATE_DATE_SHIFT'
+                      AND mso.candidate_spending_id IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM mbank_statement_operations other
+                          WHERE other.spending_id = mso.candidate_spending_id AND other.id <> mso.id
+                      )
+                    """,
+                    id
+            );
+        }
+        return linked;
     }
 
     /**

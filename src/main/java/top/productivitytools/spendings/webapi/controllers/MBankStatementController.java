@@ -96,6 +96,18 @@ public class MBankStatementController {
         return ResponseEntity.ok(diffService.getReconciliationView(request.from(), request.to()));
     }
 
+    public record LinkCandidatesRequest(List<Long> statementOperationIds, LocalDate from, LocalDate to) {}
+
+    /** Confirms several candidate pairs in one request (each operation is linked to its candidate spending). */
+    @PostMapping("/link-candidates")
+    public ResponseEntity<Map<String, Object>> linkCandidates(@RequestBody LinkCandidatesRequest request) {
+        int linked = diffService.linkCandidates(request.statementOperationIds());
+        return ResponseEntity.ok(Map.of(
+                "linkedCount", linked,
+                "report", diffService.getReconciliationView(request.from(), request.to())
+        ));
+    }
+
     public record UnlinkRequest(Long statementOperationId, LocalDate from, LocalDate to) {}
 
     @PostMapping("/unlink")
