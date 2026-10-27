@@ -297,6 +297,26 @@ public class MBankStatementDiffService {
                 Date.valueOf(toDate)
         );
 
+        // Automatic matches (EXACT / DATE_SHIFT_1D) are re-evaluated as well, so improvements of the matching
+        // logic fix earlier wrong pairings. Manual links, promoted rows and e-mail-arrival links are kept.
+        jdbcTemplate.update(
+                """
+                UPDATE mbank_statement_operations
+                SET reconciliation_status = 'UNRECONCILED',
+                    match_type = NULL,
+                    date_diff_days = NULL,
+                    match_score = NULL,
+                    spending_id = NULL,
+                    candidate_spending_id = NULL,
+                    reconciled_at = NULL
+                WHERE operation_date >= ? AND operation_date <= ?
+                  AND reconciliation_status = 'MATCHED_EMAIL'
+                  AND match_type IN ('EXACT', 'DATE_SHIFT_1D')
+                """,
+                Date.valueOf(fromDate),
+                Date.valueOf(toDate)
+        );
+
         // Also ensure any statement row that already has spending_id set via spendings.statement_operation_id is synced
         jdbcTemplate.update(
                 """
@@ -338,100 +358,46 @@ public class MBankStatementDiffService {
         Set<Long> matchedStmtIds = new HashSet<>();
         Set<Long> matchedDbIds = new HashSet<>();
 
-        // Pass 1: Exact date + exact amount + same src_account (or compatible) -> MATCHED_EMAIL
-        List<PotentialStoredMatch> pass1 = new ArrayList<>();
+        // Passes 1+2 (one global ranking, so a pair with a matching title wins over a same-day pair with a different
+        // title - e-mails are often dated a day after the statement, which used to cross-match equal amounts):
+        //  - same amount, currency and compatible account, dates 0..3 days apart
+        //  - 0 days -> MATCHED_EMAIL (EXACT); 1 day with score >= 115 -> MATCHED_EMAIL (DATE_SHIFT_1D);
+        //    otherwise CANDIDATE_DATE_SHIFT for 1-click user review
+        List<PotentialStoredMatch> pairs = new ArrayList<>();
         for (StoredStatementOpRow stmtOp : pendingOps) {
             for (DbSpendingCandidate db : availableDb) {
-                if (!amountsEqual(stmtOp.amount(), db.amount())) {
-                    continue;
-                }
-                if (!currenciesCompatible(stmtOp.currency(), db.currency())) {
-                    continue;
-                }
-                if (!Objects.equals(stmtOp.operationDate(), db.effectiveDate())) {
-                    continue;
-                }
-                if (!accountsCompatible(stmtOp.srcAccountShort(), db)) {
-                    continue;
-                }
-                int score = scoreStoredPair(stmtOp, db, 0);
-                pass1.add(new PotentialStoredMatch(stmtOp.id(), db.id(), "EXACT", 0, score));
-            }
-        }
-        pass1.sort(Comparator.comparingInt(PotentialStoredMatch::score).reversed());
-
-        for (PotentialStoredMatch m : pass1) {
-            if (matchedStmtIds.contains(m.stmtId()) || matchedDbIds.contains(m.dbId())) {
-                continue;
-            }
-            matchedStmtIds.add(m.stmtId());
-            matchedDbIds.add(m.dbId());
-            jdbcTemplate.update(
-                    """
-                    UPDATE mbank_statement_operations
-                    SET reconciliation_status = 'MATCHED_EMAIL',
-                        match_type = ?,
-                        date_diff_days = 0,
-                        match_score = ?,
-                        spending_id = ?,
-                        candidate_spending_id = NULL,
-                        reconciled_at = NOW()
-                    WHERE id = ?
-                    """,
-                    m.matchType(),
-                    m.score(),
-                    m.dbId(),
-                    m.stmtId()
-            );
-        }
-
-        // Pass 2: Date shift up to 3 days + exact amount + compatible account
-        // High confidence (±1 day + same src_account + title/dst match >= 115) -> auto-link as MATCHED_EMAIL (DATE_SHIFT_1D)
-        // Otherwise -> mark as CANDIDATE_DATE_SHIFT with candidate_spending_id for 1-click user review
-        List<PotentialStoredMatch> pass2 = new ArrayList<>();
-        for (StoredStatementOpRow stmtOp : pendingOps) {
-            if (matchedStmtIds.contains(stmtOp.id())) {
-                continue;
-            }
-            for (DbSpendingCandidate db : availableDb) {
-                if (matchedDbIds.contains(db.id())) {
-                    continue;
-                }
-                if (!amountsEqual(stmtOp.amount(), db.amount())) {
-                    continue;
-                }
-                if (!currenciesCompatible(stmtOp.currency(), db.currency())) {
-                    continue;
-                }
-                if (stmtOp.operationDate() == null || db.effectiveDate() == null) {
+                if (!amountsEqual(stmtOp.amount(), db.amount())
+                        || !currenciesCompatible(stmtOp.currency(), db.currency())
+                        || stmtOp.operationDate() == null || db.effectiveDate() == null
+                        || !accountsCompatible(stmtOp.srcAccountShort(), db)) {
                     continue;
                 }
                 long diffDays = Math.abs(ChronoUnit.DAYS.between(stmtOp.operationDate(), db.effectiveDate()));
-                if (diffDays == 0 || diffDays > 3) {
-                    continue;
-                }
-                if (!accountsCompatible(stmtOp.srcAccountShort(), db)) {
+                if (diffDays > 3) {
                     continue;
                 }
                 int score = scoreStoredPair(stmtOp, db, diffDays);
-                pass2.add(new PotentialStoredMatch(stmtOp.id(), db.id(), "DATE_SHIFT", (int) diffDays, score));
+                pairs.add(new PotentialStoredMatch(stmtOp.id(), db.id(), diffDays == 0 ? "EXACT" : "DATE_SHIFT",
+                        (int) diffDays, score));
             }
         }
-        pass2.sort(Comparator.comparingInt(PotentialStoredMatch::score).reversed());
+        pairs.sort(Comparator.comparingInt(PotentialStoredMatch::score).reversed()
+                .thenComparingInt(PotentialStoredMatch::dateDiffDays));
 
-        for (PotentialStoredMatch m : pass2) {
+        for (PotentialStoredMatch m : pairs) {
             if (matchedStmtIds.contains(m.stmtId()) || matchedDbIds.contains(m.dbId())) {
                 continue;
             }
             matchedStmtIds.add(m.stmtId());
             matchedDbIds.add(m.dbId());
 
-            if (m.dateDiffDays() == 1 && m.score() >= 115) {
+            boolean autoLink = m.dateDiffDays() == 0 || (m.dateDiffDays() == 1 && m.score() >= 115);
+            if (autoLink) {
                 jdbcTemplate.update(
                         """
                         UPDATE mbank_statement_operations
                         SET reconciliation_status = 'MATCHED_EMAIL',
-                            match_type = 'DATE_SHIFT_1D',
+                            match_type = ?,
                             date_diff_days = ?,
                             match_score = ?,
                             spending_id = ?,
@@ -439,6 +405,7 @@ public class MBankStatementDiffService {
                             reconciled_at = NOW()
                         WHERE id = ?
                         """,
+                        m.dateDiffDays() == 0 ? "EXACT" : "DATE_SHIFT_1D",
                         m.dateDiffDays(),
                         m.score(),
                         m.dbId(),
@@ -833,7 +800,38 @@ public class MBankStatementDiffService {
      * the free-text query in a wider ±180 day window), not linked to any other statement operation and not created
      * from a statement. Sorted by amount difference, then date difference.
      */
-    public List<DbSpendingCandidate> findLinkCandidates(Long statementOperationId, int days, String query) {
+    /** Link-picker row: a spending plus the reason why it cannot be linked (null = can be linked). */
+    public record LinkCandidate(
+            Long id,
+            LocalDate effectiveDate,
+            String rawOperationDate,
+            String title,
+            String operationType,
+            BigDecimal amount,
+            String currency,
+            BigDecimal amountPln,
+            String srcAccount,
+            String dstAccount,
+            String categoryName,
+            String accountKey,
+            Long rawEmailId,
+            Long statementOperationId,
+            String unavailableReason
+    ) {
+        static LinkCandidate of(DbSpendingCandidate c, String reason) {
+            return new LinkCandidate(c.id(), c.effectiveDate(), c.rawOperationDate(), c.title(), c.operationType(),
+                    c.amount(), c.currency(), c.amountPln(), c.srcAccount(), c.dstAccount(), c.categoryName(),
+                    c.accountKey(), c.rawEmailId(), c.statementOperationId(), reason);
+        }
+    }
+
+    /**
+     * Spendings for the manual link picker: within ±days of the operation date (or matching the free-text query in
+     * a ±180 day window; "#123" / "123" also finds spending 123 regardless of its date). Spendings that cannot be
+     * linked (already linked to another statement operation, created from a statement, duplicates) are returned
+     * with unavailableReason instead of being hidden. Linkable rows first, then by amount and date difference.
+     */
+    public List<LinkCandidate> findLinkCandidates(Long statementOperationId, int days, String query) {
         List<Map<String, Object>> ops = jdbcTemplate.queryForList(
                 "SELECT operation_date, amount FROM mbank_statement_operations WHERE id = ?", statementOperationId);
         if (ops.isEmpty()) {
@@ -842,25 +840,71 @@ public class MBankStatementDiffService {
         LocalDate opDate = ((Date) ops.getFirst().get("operation_date")).toLocalDate();
         BigDecimal opAmount = (BigDecimal) ops.getFirst().get("amount");
         String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
-        int window = q.isEmpty() ? Math.max(0, Math.min(days, 60)) : 180;
+        if (q.startsWith("#")) {
+            q = q.substring(1).trim();
+        }
+        final String needle = q;
+        int window = needle.isEmpty() ? Math.max(0, Math.min(days, 60)) : 180;
 
-        Set<Long> linkedIds = new HashSet<>(jdbcTemplate.queryForList(
-                "SELECT spending_id FROM mbank_statement_operations WHERE spending_id IS NOT NULL AND id <> ?",
-                Long.class, statementOperationId));
+        Map<Long, Long> linkedTo = new HashMap<>();
+        jdbcTemplate.query(
+                "SELECT spending_id, id FROM mbank_statement_operations WHERE spending_id IS NOT NULL AND id <> ?",
+                rs -> { linkedTo.put(rs.getLong("spending_id"), rs.getLong("id")); },
+                statementOperationId);
 
-        return fetchDbCandidates(opDate.minusDays(window), opDate.plusDays(window)).stream()
-                .filter(c -> !linkedIds.contains(c.id()))
-                .filter(c -> c.statementOperationId() == null)
-                .filter(c -> q.isEmpty() || matchesQuery(c, q))
-                .sorted(Comparator
-                        .comparing((DbSpendingCandidate c) -> c.amount() == null || opAmount == null
-                                ? BigDecimal.valueOf(Long.MAX_VALUE)
-                                : c.amount().subtract(opAmount).abs())
-                        .thenComparing(c -> c.effectiveDate() == null
-                                ? Long.MAX_VALUE
-                                : Math.abs(java.time.temporal.ChronoUnit.DAYS.between(opDate, c.effectiveDate()))))
-                .limit(50)
-                .toList();
+        Map<Long, DbSpendingCandidate> found = new LinkedHashMap<>();
+        fetchDbCandidates(opDate.minusDays(window), opDate.plusDays(window)).stream()
+                .filter(c -> needle.isEmpty() || matchesQuery(c, needle))
+                .forEach(c -> found.putIfAbsent(c.id(), c));
+
+        List<LinkCandidate> result = new ArrayList<>();
+        // A numeric query is also treated as a spending id, independent of the date window
+        String duplicateReason = null;
+        if (needle.matches("\\d{1,12}")) {
+            long spendingId = Long.parseLong(needle);
+            List<Map<String, Object>> byId = jdbcTemplate.queryForList(
+                    """
+                    SELECT s.operation_date, sd.duplicate_of
+                    FROM spendings s LEFT JOIN spending_details sd ON sd.spending_id = s.id
+                    WHERE s.id = ?
+                    """, spendingId);
+            if (!byId.isEmpty() && !found.containsKey(spendingId)) {
+                Object dup = byId.getFirst().get("duplicate_of");
+                if (dup != null) {
+                    duplicateReason = "#" + spendingId + " to duplikat transakcji #" + dup + " – połącz z #" + dup;
+                } else {
+                    // date stored as text in various formats: search a wide window around the statement date
+                    fetchDbCandidates(opDate.minusYears(5), opDate.plusYears(5)).stream()
+                            .filter(c -> c.id() == spendingId)
+                            .findFirst()
+                            .ifPresent(c -> found.put(c.id(), c));
+                }
+            }
+        }
+
+        for (DbSpendingCandidate c : found.values()) {
+            String reason = null;
+            if (c.statementOperationId() != null) {
+                reason = "utworzona z wyciągu (operacja #" + c.statementOperationId() + ")";
+            } else if (linkedTo.containsKey(c.id())) {
+                reason = "już połączona z operacją z wyciągu #" + linkedTo.get(c.id());
+            }
+            result.add(LinkCandidate.of(c, reason));
+        }
+        result.sort(Comparator
+                .comparing((LinkCandidate c) -> c.unavailableReason() != null)
+                .thenComparing(c -> c.amount() == null || opAmount == null
+                        ? BigDecimal.valueOf(Long.MAX_VALUE)
+                        : c.amount().subtract(opAmount).abs())
+                .thenComparing(c -> c.effectiveDate() == null
+                        ? Long.MAX_VALUE
+                        : Math.abs(ChronoUnit.DAYS.between(opDate, c.effectiveDate()))));
+        List<LinkCandidate> limited = new ArrayList<>(result.subList(0, Math.min(50, result.size())));
+        if (duplicateReason != null) {
+            limited.addFirst(new LinkCandidate(Long.parseLong(needle), null, null, duplicateReason, null, null,
+                    null, null, null, null, null, null, null, null, duplicateReason));
+        }
+        return limited;
     }
 
     private static boolean matchesQuery(DbSpendingCandidate c, String q) {

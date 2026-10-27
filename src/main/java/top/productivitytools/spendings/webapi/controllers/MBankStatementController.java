@@ -118,7 +118,7 @@ public class MBankStatementController {
 
     /** Spendings that can be manually linked to the statement operation (closest amount and date first). */
     @GetMapping("/{id}/link-candidates")
-    public List<DbSpendingCandidate> linkCandidates(
+    public List<MBankStatementDiffService.LinkCandidate> linkCandidates(
             @PathVariable("id") Long id,
             @RequestParam(value = "days", defaultValue = "7") int days,
             @RequestParam(value = "q", required = false) String query
