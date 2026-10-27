@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import top.productivitytools.spendings.webapi.services.MBankStatementDiffService;
+import top.productivitytools.spendings.webapi.services.MBankStatementDiffService.DbSpendingCandidate;
 import top.productivitytools.spendings.webapi.services.MBankStatementDiffService.ReconciliationReport;
 import top.productivitytools.spendings.webapi.services.MBankStatementDiffService.StatementDiffReport;
 
@@ -93,6 +94,24 @@ public class MBankStatementController {
     public ResponseEntity<ReconciliationReport> linkOperation(@RequestBody LinkRequest request) {
         diffService.linkStatementToSpending(request.statementOperationId(), request.spendingId());
         return ResponseEntity.ok(diffService.getReconciliationView(request.from(), request.to()));
+    }
+
+    public record UnlinkRequest(Long statementOperationId, LocalDate from, LocalDate to) {}
+
+    @PostMapping("/unlink")
+    public ResponseEntity<ReconciliationReport> unlinkOperation(@RequestBody UnlinkRequest request) {
+        diffService.unlinkStatementOperation(request.statementOperationId());
+        return ResponseEntity.ok(diffService.getReconciliationView(request.from(), request.to()));
+    }
+
+    /** Spendings that can be manually linked to the statement operation (closest amount and date first). */
+    @GetMapping("/{id}/link-candidates")
+    public List<DbSpendingCandidate> linkCandidates(
+            @PathVariable("id") Long id,
+            @RequestParam(value = "days", defaultValue = "7") int days,
+            @RequestParam(value = "q", required = false) String query
+    ) {
+        return diffService.findLinkCandidates(id, days, query);
     }
 
     public record IgnoreRequest(List<Long> ids, List<Long> statementOperationIds, boolean ignored, LocalDate from, LocalDate to) {

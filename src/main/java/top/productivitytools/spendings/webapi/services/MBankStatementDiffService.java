@@ -3,8 +3,10 @@ package top.productivitytools.spendings.webapi.services;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 import top.productivitytools.spendings.webapi.services.MBankStatementParser.ParsedStatement;
 import top.productivitytools.spendings.webapi.services.MBankStatementParser.StatementAccount;
 import top.productivitytools.spendings.webapi.services.MBankStatementParser.StatementOperation;
@@ -646,7 +648,22 @@ public class MBankStatementDiffService {
 
     @Transactional
     public void linkStatementToSpending(Long statementOperationId, Long spendingId) {
-        jdbcTemplate.update(
+        if (statementOperationId == null || spendingId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj operację z wyciągu i wydatek");
+        }
+        Integer spendingExists = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM spendings WHERE id = ?", Integer.class, spendingId);
+        if (spendingExists == null || spendingExists == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Wydatek #" + spendingId + " nie istnieje");
+        }
+        List<Long> otherOps = jdbcTemplate.queryForList(
+                "SELECT id FROM mbank_statement_operations WHERE spending_id = ? AND id <> ?",
+                Long.class, spendingId, statementOperationId);
+        if (!otherOps.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Wydatek #" + spendingId + " jest już połączony z operacją z wyciągu #" + otherOps.getFirst());
+        }
+        int rows = jdbcTemplate.update(
                 """
                 UPDATE mbank_statement_operations
                 SET spending_id = ?,
@@ -659,6 +676,81 @@ public class MBankStatementDiffService {
                 spendingId,
                 statementOperationId
         );
+        if (rows == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Operacja z wyciągu #" + statementOperationId + " nie istnieje");
+        }
+    }
+
+    /**
+     * Removes a link between a statement operation and an e-mail spending, putting the operation back to UNRECONCILED.
+     * Operations promoted to spendings (IMPORTED_TO_SPENDINGS) cannot be unlinked this way.
+     */
+    @Transactional
+    public void unlinkStatementOperation(Long statementOperationId) {
+        int rows = jdbcTemplate.update(
+                """
+                UPDATE mbank_statement_operations
+                SET spending_id = NULL,
+                    candidate_spending_id = NULL,
+                    reconciliation_status = 'UNRECONCILED',
+                    match_type = NULL,
+                    date_diff_days = NULL,
+                    match_score = NULL,
+                    reconciled_at = NULL
+                WHERE id = ?
+                  AND reconciliation_status = 'MATCHED_EMAIL'
+                """,
+                statementOperationId
+        );
+        if (rows == 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Operację #" + statementOperationId + " można rozłączyć tylko, gdy jest połączona z wydatkiem z e-maila");
+        }
+    }
+
+    /**
+     * Spendings that can be manually linked to the statement operation: within ±days of its date (or matching
+     * the free-text query in a wider ±180 day window), not linked to any other statement operation and not created
+     * from a statement. Sorted by amount difference, then date difference.
+     */
+    public List<DbSpendingCandidate> findLinkCandidates(Long statementOperationId, int days, String query) {
+        List<Map<String, Object>> ops = jdbcTemplate.queryForList(
+                "SELECT operation_date, amount FROM mbank_statement_operations WHERE id = ?", statementOperationId);
+        if (ops.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Operacja z wyciągu #" + statementOperationId + " nie istnieje");
+        }
+        LocalDate opDate = ((Date) ops.getFirst().get("operation_date")).toLocalDate();
+        BigDecimal opAmount = (BigDecimal) ops.getFirst().get("amount");
+        String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        int window = q.isEmpty() ? Math.max(0, Math.min(days, 60)) : 180;
+
+        Set<Long> linkedIds = new HashSet<>(jdbcTemplate.queryForList(
+                "SELECT spending_id FROM mbank_statement_operations WHERE spending_id IS NOT NULL AND id <> ?",
+                Long.class, statementOperationId));
+
+        return fetchDbCandidates(opDate.minusDays(window), opDate.plusDays(window)).stream()
+                .filter(c -> !linkedIds.contains(c.id()))
+                .filter(c -> c.statementOperationId() == null)
+                .filter(c -> q.isEmpty() || matchesQuery(c, q))
+                .sorted(Comparator
+                        .comparing((DbSpendingCandidate c) -> c.amount() == null || opAmount == null
+                                ? BigDecimal.valueOf(Long.MAX_VALUE)
+                                : c.amount().subtract(opAmount).abs())
+                        .thenComparing(c -> c.effectiveDate() == null
+                                ? Long.MAX_VALUE
+                                : Math.abs(java.time.temporal.ChronoUnit.DAYS.between(opDate, c.effectiveDate()))))
+                .limit(50)
+                .toList();
+    }
+
+    private static boolean matchesQuery(DbSpendingCandidate c, String q) {
+        String haystack = String.join(" ",
+                Objects.toString(c.title(), ""),
+                Objects.toString(c.operationType(), ""),
+                Objects.toString(c.categoryName(), ""),
+                Objects.toString(c.amount(), ""),
+                String.valueOf(c.id())).toLowerCase(Locale.ROOT);
+        return haystack.contains(q.replace(',', '.'));
     }
 
     @Transactional
