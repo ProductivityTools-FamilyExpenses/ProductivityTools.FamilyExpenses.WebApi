@@ -70,8 +70,8 @@ public class SpendingRefundController {
     /**
      * Links the refund transaction {@code refundSpendingId} to the expense {@code id}. The expense stays
      * flagged ({@code refund_expected = TRUE}); the UI shows the linked state via {@code refundSpendingId}.
-     * If the refund row has no category yet, the expense's category is copied to it so that category
-     * reports net the refund against the expense. 400 when ids are equal or the refund is already linked
+     * The expense's category (when set) is copied to the refund row, replacing its current category,
+     * so that category reports net the refund against the expense. 400 when ids are equal or the refund is already linked
      * to another expense.
      */
     @PutMapping("/{id}/refund/link")
@@ -111,7 +111,7 @@ public class SpendingRefundController {
                     "Spending " + refundId + " is already linked as the refund of another spending", e);
         }
 
-        // copy the expense's category to the refund row when the refund has none
+        // the refund always takes over the expense's category, so reports net it against the same category
         String expenseCategory = jdbcTemplate.query(
                 "SELECT category FROM spending_details WHERE spending_id = ?",
                 rs -> rs.next() ? rs.getString(1) : null,
@@ -123,7 +123,6 @@ public class SpendingRefundController {
                     VALUES (?, ?, NOW())
                     ON CONFLICT (spending_id) DO UPDATE
                     SET category = EXCLUDED.category, updated_at = NOW()
-                    WHERE spending_details.category IS NULL OR spending_details.category = ''
                     """,
                     refundId, expenseCategory);
         }
