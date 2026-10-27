@@ -22,7 +22,7 @@ public class RawEmailController {
 
     @PostMapping("/raw")
     public ResponseEntity<Void> saveRawEmail(@RequestBody RawEmailRequest request) {
-        jdbcTemplate.update(
+        int inserted = jdbcTemplate.update(
                 """
                 INSERT INTO mbank_raw_emails (
                     message_id, thread_id, source, subject, attachment_name, email_date, raw_html, status
@@ -37,6 +37,13 @@ public class RawEmailController {
                 request.emailDate(),
                 request.rawHtml()
         );
+
+        if (inserted == 0) {
+            // Already stored: if the stored copy lost Polish characters (decoded with a wrong charset,
+            // U+FFFD replacement chars) and this copy is clean, repair the stored e-mail and its transactions.
+            emailProcessingService.repairEncodingIfBroken(request.messageId(), request.rawHtml());
+            return ResponseEntity.accepted().build();
+        }
 
         emailProcessingService.triggerAsync();
 
