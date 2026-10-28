@@ -36,7 +36,8 @@ public class DictionaryCategoryGroupController {
     public record CategoryGroup(Long id, String name, int sortOrder, String color, List<String> categories) {}
     public record CategoryGroupRequest(String name, Integer sortOrder, String color) {}
     /** A dictionary category with its (optional) group. */
-    public record CategoryAssignment(String name, Long groupId, String groupName) {}
+    public record CategoryAssignment(String name, Long groupId, String groupName, String color) {}
+    public record CategoryColorRequest(String color) {}
     public record CategoryAssignmentRequest(Long groupId) {}
 
     @GetMapping
@@ -111,13 +112,36 @@ public class DictionaryCategoryGroupController {
     public List<CategoryAssignment> getCategories() {
         return jdbcTemplate.query(
                 """
-                SELECT c.name, c.group_id, g.name AS group_name
+                SELECT c.name, c.group_id, g.name AS group_name, c.color
                 FROM dictionary_category c
                 LEFT JOIN dictionary_category_group g ON g.id = c.group_id
                 ORDER BY c.name
                 """,
                 (rs, n) -> new CategoryAssignment(rs.getString("name"), rs.getObject("group_id", Long.class),
-                        rs.getString("group_name")));
+                        rs.getString("group_name"), rs.getString("color")));
+    }
+
+    /** Sets the category's chart colour ({@code "#rrggbb"}) or clears it ({@code color: null} / blank = automatic). */
+    @PutMapping("/categories/{name}/color")
+    public CategoryAssignment setColor(@PathVariable String name, @RequestBody CategoryColorRequest request) {
+        String color = request == null ? null : blankToNull(request.color());
+        if (color != null && !color.matches("#[0-9A-Fa-f]{6}")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Kolor musi mieć format #rrggbb");
+        }
+        int rows = jdbcTemplate.update("UPDATE dictionary_category SET color = ? WHERE name = ?", color, name);
+        if (rows == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Brak kategorii '" + name + "'");
+        }
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT c.name, c.group_id, g.name AS group_name, c.color
+                FROM dictionary_category c
+                LEFT JOIN dictionary_category_group g ON g.id = c.group_id
+                WHERE c.name = ?
+                """,
+                (rs, n) -> new CategoryAssignment(rs.getString("name"), rs.getObject("group_id", Long.class),
+                        rs.getString("group_name"), rs.getString("color")),
+                name);
     }
 
     /** Assigns the category to a group ({@code groupId}) or clears the assignment ({@code groupId: null}). */
@@ -137,7 +161,8 @@ public class DictionaryCategoryGroupController {
         if (rows == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Brak kategorii '" + name + "'");
         }
-        return new CategoryAssignment(name, groupId, groupName);
+        String color = jdbcTemplate.queryForObject("SELECT color FROM dictionary_category WHERE name = ?", String.class, name);
+        return new CategoryAssignment(name, groupId, groupName, color);
     }
 
     private static String requireText(String value, String field) {

@@ -52,7 +52,7 @@ public class ReportController {
     public record Hygiene(int uncategorized, int withoutAccount, int withoutPln, int unmappedAccounts,
                           int unlinkedAuthorizations, int allegroEmailsWithoutSpending, int emailsInError,
                           int duplicates, List<HygieneCategory> proxyCategories, List<Map<String, Object>> uncategorizedSample,
-                          String firstMonth, List<CategoryGroupInfo> groups) {}
+                          String firstMonth, List<CategoryGroupInfo> groups, Map<String, String> categoryColors) {}
 
     /** Report 1: net amount per category per month – expenses plus refunds/incomes booked in the same category. */
     @GetMapping("/category-monthly")
@@ -270,8 +270,13 @@ public class ReportController {
                 "SELECT id, name, color, sort_order FROM dictionary_category_group ORDER BY sort_order, name",
                 (rs, n) -> new CategoryGroupInfo(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
                         rs.getInt("sort_order")));
+        // user-defined chart colours of categories (dictionary_category.color); categories without one use the palette
+        Map<String, String> categoryColors = new java.util.LinkedHashMap<>();
+        jdbcTemplate.query(
+                "SELECT name, color FROM dictionary_category WHERE color IS NOT NULL AND color <> '' ORDER BY name",
+                rs -> { categoryColors.put(rs.getString("name"), rs.getString("color")); });
         return new Hygiene(uncategorized, withoutAccount, withoutPln, unmappedAccounts, unlinkedAuth,
-                allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth, groups);
+                allegroUnlinked, emailsInError, duplicates, proxy, sample, firstMonth, groups, categoryColors);
     }
 
     private int count(String sql) {
