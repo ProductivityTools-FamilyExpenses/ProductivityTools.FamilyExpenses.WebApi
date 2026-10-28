@@ -38,6 +38,7 @@ public class DictionaryCategoryGroupController {
     /** A dictionary category with its (optional) group. */
     public record CategoryAssignment(String name, Long groupId, String groupName, String color) {}
     public record CategoryColorRequest(String color) {}
+    public record CategoryColorsRequest(Map<String, String> colors) {}
     public record CategoryAssignmentRequest(Long groupId) {}
 
     @GetMapping
@@ -119,6 +120,23 @@ public class DictionaryCategoryGroupController {
                 """,
                 (rs, n) -> new CategoryAssignment(rs.getString("name"), rs.getObject("group_id", Long.class),
                         rs.getString("group_name"), rs.getString("color")));
+    }
+
+    /** Sets the chart colours of many categories at once (e.g. "Losuj kolory"); returns the updated category list. */
+    @PutMapping("/categories/colors")
+    @org.springframework.transaction.annotation.Transactional
+    public List<CategoryAssignment> setColors(@RequestBody CategoryColorsRequest request) {
+        if (request == null || request.colors() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Pole 'colors' jest wymagane");
+        }
+        for (Map.Entry<String, String> e : request.colors().entrySet()) {
+            String color = blankToNull(e.getValue());
+            if (color != null && !color.matches("#[0-9A-Fa-f]{6}")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Kolor musi mieć format #rrggbb: " + e.getValue());
+            }
+            jdbcTemplate.update("UPDATE dictionary_category SET color = ? WHERE name = ?", color, e.getKey());
+        }
+        return getCategories();
     }
 
     /** Sets the category's chart colour ({@code "#rrggbb"}) or clears it ({@code color: null} / blank = automatic). */
